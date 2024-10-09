@@ -123,9 +123,9 @@ scene = {
         Light(Vector3(0, 5, 0), Vector3(1, 1, 1), 0.5),
     ],
     'spheres': [
-        Sphere(Vector3(0, 1, -5), 1, Material(Vector3(1, 0, 0), specular=0.6, reflection=0.2)),
-        Sphere(Vector3(-2.5, 1, -7), 1.5, Material(Vector3(0, 1, 0), specular=0.4, reflection=0.8)),  # More reflective
-        Sphere(Vector3(2.5, 1, -6), 0.75, Material(Vector3(0, 0, 1), specular=0.5, reflection=0.1))
+        Sphere(Vector3(0, 1, -5), 1, Material(Vector3(1, 0, 0), specular=0.3, reflection=0.1)),  # Red sphere
+        Sphere(Vector3(-2.5, 1, -7), 1.5, Material(Vector3(0, 1, 0), specular=0.3, reflection=0.4)),  # Green sphere (mirror-like)
+        Sphere(Vector3(2.5, 1, -6), 0.75, Material(Vector3(0, 0, 1), specular=0.3, reflection=0.1))  # Blue sphere
     ],
     'cylinders': [
         Cylinder(Vector3(-1, 0.5, -4), 0.5, 1, Material(Vector3(1, 1, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5)),
@@ -217,17 +217,17 @@ def compute_lighting(point, normal, view_dir, material, scene):
 
         if not shadow_intersection or (shadow_intersection[0].material.refraction > 0):
             diffuse = max(0, normal.dot(light_dir))
-            color = color + material.color * light.color * light.intensity * diffuse
+            color = color + material.color * light.color * light.intensity * diffuse * 0.5  # Reduced diffuse contribution
 
             if material.specular > 0:
                 reflect_dir = light_dir - normal * (2 * light_dir.dot(normal))
                 specular = max(0, view_dir.dot(reflect_dir)) ** 50
-                color = color + light.color * light.intensity * material.specular * specular
+                color = color + light.color * light.intensity * material.specular * specular * 0.3  # Reduced specular contribution
 
     return color
 
 def trace_ray(ray, scene, depth=0):
-    if depth > 5:
+    if depth > 3:  # Reduce max depth to prevent over-brightening
         return Vector3(0, 0, 0)
 
     intersection = find_nearest_intersection(ray, scene)
@@ -251,7 +251,7 @@ def trace_ray(ray, scene, depth=0):
     color = color * light_color
 
     # Compute reflection
-    if material.reflection > 0:
+    if material.reflection > 0 and depth < 3:
         reflect_dir = ray.direction - normal * (2 * ray.direction.dot(normal))
         reflect_ray = Ray(hit_point + normal * 0.001, reflect_dir)
         reflect_color = trace_ray(reflect_ray, scene, depth + 1)
@@ -377,7 +377,7 @@ def main():
 
     # Apply gamma correction and tone mapping
     image_cpu = np.power(image_cpu / 255.0, 1/2.2)  # Gamma correction
-    image_cpu = np.clip(image_cpu * 1.5, 0, 1)  # Increase brightness and clip
+    image_cpu = np.clip(image_cpu * 1.2, 0, 1)  # Slightly increase brightness and clip
     image_cpu = (image_cpu * 255).astype(np.uint8)
 
     # Save the image
