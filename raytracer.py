@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib.pyplot as plt
 import random
 import math
 import multiprocessing
@@ -371,7 +372,6 @@ def export_image(image, filename="render.png"):
     logging.info(f"Image exported as {filename}")
 
 def main():
-    global window
     width, height = 800, 600
     samples = 4
 
@@ -383,31 +383,21 @@ def main():
     end_time = time.time()
     logging.info(f"Rendering complete. Time taken: {end_time - start_time:.2f} seconds")
 
-    export_image(image)
-
-    glutInit()
-    glutInitDisplayMode(GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH)
-    glutInitWindowSize(width, height)
-    window = glutCreateWindow(b"Ray Traced Scene")
-
-    glEnable(GL_TEXTURE_2D)
-    texture = glGenTextures(1)
-    glBindTexture(GL_TEXTURE_2D, texture)
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-
-    glutDisplayFunc(display)
-    glutReshapeFunc(reshape)
-    glutKeyboardFunc(keyboard)
-    glutMainLoop()
     if using_gpu:
         image_cpu = cp.asnumpy(image)
     else:
         image_cpu = image
 
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image_cpu)
+    # Save the image
+    plt.imsave("render.png", image_cpu.astype(np.uint8))
+    logging.info("Image saved as render.png")
 
+    # Display the image
+    plt.figure(figsize=(10, 7.5))
+    plt.imshow(image_cpu.astype(np.uint8))
+    plt.axis('off')
+    plt.title("Ray Traced Scene")
+    plt.show()
 
 if __name__ == "__main__":
     main()
