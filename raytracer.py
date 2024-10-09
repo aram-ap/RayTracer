@@ -113,12 +113,18 @@ class AreaLight:
         self.samples = samples
 
 # Scene setup
+# Updated scene setup
 scene = {
-    'global_light': Light(Vector3(0, 10, 10), Vector3(1, 1, 1), 0.5),  # Increased intensity
-    'area_light': AreaLight(Vector3(5, 5, 5), Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(1, 1, 1), 1.0, samples=16),  # Increased intensity
+    'global_light': Light(Vector3(0, 10, 0), Vector3(1, 1, 1), 0.5),
+    'lights': [
+        Light(Vector3(-5, 5, -5), Vector3(1, 0.8, 0.8), 0.5),
+        Light(Vector3(5, 5, -5), Vector3(0.8, 1, 0.8), 0.5),
+        Light(Vector3(0, 5, -10), Vector3(0.8, 0.8, 1), 0.5),
+        Light(Vector3(0, 5, 0), Vector3(1, 1, 1), 0.5),
+    ],
     'spheres': [
         Sphere(Vector3(0, 1, -5), 1, Material(Vector3(1, 0, 0), specular=0.6, reflection=0.2)),
-        Sphere(Vector3(-2.5, 1, -7), 1.5, Material(Vector3(0, 1, 0), specular=0.4, reflection=1.0)),  # Mirror sphere
+        Sphere(Vector3(-2.5, 1, -7), 1.5, Material(Vector3(0, 1, 0), specular=0.4, reflection=0.8)),  # More reflective
         Sphere(Vector3(2.5, 1, -6), 0.75, Material(Vector3(0, 0, 1), specular=0.5, reflection=0.1))
     ],
     'cylinders': [
@@ -126,15 +132,14 @@ scene = {
         Cylinder(Vector3(1, 0.5, -3), 0.5, 1, Material(Vector3(1, 1, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5))
     ],
     'planes': [
-        Plane(Vector3(0, -1, 0), Vector3(0, 1, 0), Material(Vector3(0.8, 0.8, 0.8))),  # Floor, moved down
-        Plane(Vector3(0, 0, -15), Vector3(0, 0, 1), Material(Vector3(0.8, 0.8, 0.8))),  # Back wall, moved back
-        Plane(Vector3(-15, 0, 0), Vector3(1, 0, 0), Material(Vector3(0.8, 0.8, 0.8))),  # Left wall, moved left
-        Plane(Vector3(15, 0, 0), Vector3(-1, 0, 0), Material(Vector3(0.8, 0.8, 0.8)))   # Right wall, moved right
+        Plane(Vector3(0, -1, 0), Vector3(0, 1, 0), Material(Vector3(0.9, 0.9, 0.9))),  # Floor, slightly brighter
+        Plane(Vector3(0, 0, -12), Vector3(0, 0, 1), Material(Vector3(0.9, 0.9, 0.9))),  # Back wall
+        Plane(Vector3(-8, 0, 0), Vector3(1, 0, 0), Material(Vector3(0.9, 0.9, 0.9))),  # Left wall
+        Plane(Vector3(8, 0, 0), Vector3(-1, 0, 0), Material(Vector3(0.9, 0.9, 0.9)))   # Right wall
     ]
 }
 
-# Modify the checkered_pattern function to make the pattern more visible
-def checkered_pattern(point, scale=0.5):  # Reduced scale to make squares larger
+def checkered_pattern(point, scale=0.5):
     x = math.floor(point.x * scale)
     z = math.floor(point.z * scale)
     return (x + z) % 2 == 0
@@ -203,43 +208,59 @@ def find_nearest_intersection(ray, scene):
 
     return nearest_intersection
 
-# Modify the compute_lighting function to increase ambient lighting
 def compute_lighting(point, normal, view_dir, material, scene):
     color = Vector3(0.1, 0.1, 0.1)  # Ambient light
-    for light in [scene['global_light'], scene['area_light']]:
-        if isinstance(light, AreaLight):
-            light_contribution = Vector3(0, 0, 0)
-            for _ in range(light.samples):
-                random_u = random.random() - 0.5
-                random_v = random.random() - 0.5
-                light_pos = light.position + light.u * random_u + light.v * random_v
-                light_dir = (light_pos - point).normalize()
-                shadow_ray = Ray(point + normal * 0.001, light_dir)
-                shadow_intersection = find_nearest_intersection(shadow_ray, scene)
+    for light in [scene['global_light']] + scene['lights']:
+        light_dir = (light.position - point).normalize()
+        shadow_ray = Ray(point + normal * 0.001, light_dir)
+        shadow_intersection = find_nearest_intersection(shadow_ray, scene)
 
-                if not shadow_intersection or (shadow_intersection[0].material.refraction > 0):
-                    diffuse = max(0, normal.dot(light_dir))
-                    light_contribution = light_contribution + light.color * light.intensity * diffuse
+        if not shadow_intersection or (shadow_intersection[0].material.refraction > 0):
+            diffuse = max(0, normal.dot(light_dir))
+            color = color + material.color * light.color * light.intensity * diffuse
 
-                    if material.specular > 0:
-                        reflect_dir = light_dir - normal * (2 * light_dir.dot(normal))
-                        specular = max(0, view_dir.dot(reflect_dir)) ** 50
-                        light_contribution = light_contribution + light.color * light.intensity * material.specular * specular
+            if material.specular > 0:
+                reflect_dir = light_dir - normal * (2 * light_dir.dot(normal))
+                specular = max(0, view_dir.dot(reflect_dir)) ** 50
+                color = color + light.color * light.intensity * material.specular * specular
 
-            color = color + light_contribution * (1 / light.samples)
+    return color
+
+def trace_ray(ray, scene, depth=0):
+    if depth > 5:
+        return Vector3(0, 0, 0)
+
+    intersection = find_nearest_intersection(ray, scene)
+    if not intersection:
+        return Vector3(0.05, 0.05, 0.1)  # Slightly blue background
+
+    obj, hit_point, normal = intersection
+    material = obj.material
+
+    if isinstance(obj, Plane):
+        if checkered_pattern(hit_point):
+            base_color = Vector3(0.2, 0.2, 0.2)  # Darker gray
         else:
-            light_dir = (light.position - point).normalize()
-            shadow_ray = Ray(point + normal * 0.001, light_dir)
-            shadow_intersection = find_nearest_intersection(shadow_ray, scene)
+            base_color = Vector3(0.8, 0.8, 0.8)  # Lighter gray
+        color = base_color * material.color
+    else:
+        color = material.color
 
-            if not shadow_intersection or (shadow_intersection[0].material.refraction > 0):
-                diffuse = max(0, normal.dot(light_dir))
-                color = color + material.color * light.color * light.intensity * diffuse
+    # Compute lighting
+    light_color = compute_lighting(hit_point, normal, ray.direction * -1, material, scene)
+    color = color * light_color
 
-                if material.specular > 0:
-                    reflect_dir = light_dir - normal * (2 * light_dir.dot(normal))
-                    specular = max(0, view_dir.dot(reflect_dir)) ** 50
-                    color = color + light.color * light.intensity * material.specular * specular
+    # Compute reflection
+    if material.reflection > 0:
+        reflect_dir = ray.direction - normal * (2 * ray.direction.dot(normal))
+        reflect_ray = Ray(hit_point + normal * 0.001, reflect_dir)
+        reflect_color = trace_ray(reflect_ray, scene, depth + 1)
+        color = color * (1 - material.reflection) + reflect_color * material.reflection
+
+    # Compute refraction
+    if material.refraction > 0:
+        refract_color = compute_refraction(ray, hit_point, normal, material, scene, depth)
+        color = color * (1 - material.refraction) + refract_color * material.refraction
 
     return color
 
@@ -262,43 +283,6 @@ def compute_refraction(ray, hit_point, normal, material, scene, depth):
     refract_ray = Ray(hit_point - normal * 0.001, refract_dir)
     return trace_ray(refract_ray, scene, depth + 1)
 
-# Update the trace_ray function to handle the checkered pattern
-def trace_ray(ray, scene, depth=0):
-    if depth > 5:
-        return Vector3(0, 0, 0)
-
-    intersection = find_nearest_intersection(ray, scene)
-    if not intersection:
-        return Vector3(0.05, 0.05, 0.05)  # Very dark gray background instead of black
-
-    obj, hit_point, normal = intersection
-    material = obj.material
-
-    if isinstance(obj, Plane):
-        if checkered_pattern(hit_point):
-            color = Vector3(0.1, 0.1, 0.1)  # Darker gray
-        else:
-            color = Vector3(0.6, 0.6, 0.6)  # Lighter gray
-    else:
-        color = material.color
-
-    # Compute reflection
-    if material.reflection > 0:
-        reflect_dir = ray.direction - normal * (2 * ray.direction.dot(normal))
-        reflect_ray = Ray(hit_point + normal * 0.001, reflect_dir)
-        reflect_color = trace_ray(reflect_ray, scene, depth + 1)
-        color = color * (1 - material.reflection) + reflect_color * material.reflection
-
-    # Compute refraction
-    if material.refraction > 0:
-        refract_color = compute_refraction(ray, hit_point, normal, material, scene, depth)
-        color = color * (1 - material.refraction) + refract_color * material.refraction
-
-    # Compute lighting
-    light_color = compute_lighting(hit_point, normal, ray.direction * -1, material, scene)
-    color = color * light_color
-
-    return color
 def render_pixel(x, y, width, height, scene, samples=1):
     aspect_ratio = width / height
     color = Vector3(0, 0, 0)
@@ -391,9 +375,10 @@ def main():
     else:
         image_cpu = image
 
-    # Apply gamma correction
-    image_cpu = np.power(image_cpu / 255.0, 1/2.2) * 255
-    image_cpu = image_cpu.astype(np.uint8)
+    # Apply gamma correction and tone mapping
+    image_cpu = np.power(image_cpu / 255.0, 1/2.2)  # Gamma correction
+    image_cpu = np.clip(image_cpu * 1.5, 0, 1)  # Increase brightness and clip
+    image_cpu = (image_cpu * 255).astype(np.uint8)
 
     # Save the image
     plt.imsave("render.png", image_cpu)
