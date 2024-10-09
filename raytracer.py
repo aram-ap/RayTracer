@@ -76,18 +76,19 @@ class AreaLight:
 
 # Scene setup
 scene = {
-    'global_light': Light(Vector3(0, 10, 10), Vector3(1, 1, 1), 0.2),
-    'area_light': AreaLight(Vector3(5, 5, 5), Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(1, 1, 1), 0.8, samples=16),
+    'global_light': Light(Vector3(0, 10, 10), Vector3(1, 1, 1), 0.9),
+    'area_light': AreaLight(Vector3(5, 5, 5), Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(1, 1, 1), 0.9, samples=12),
     'spheres': [
-        Sphere(Vector3(0, 0, -5), 1, Material(Vector3(1, 0, 0), specular=0.6, reflection=0.2)),
-        Sphere(Vector3(-2.5, 0, -7), 1.5, Material(Vector3(0, 1, 0), specular=0.4, reflection=0.3)),
-        Sphere(Vector3(2.5, 0, -6), 0.75, Material(Vector3(0, 0, 1), specular=0.5, reflection=0.1))
+        Sphere(Vector3(0, 0, -5), 1, Material(Vector3(1, 0.59, 0.35), specular=1.0, reflection=0.4)),
+        Sphere(Vector3(-2.5, 0, -7), 1.5, Material(Vector3(0.35, 1, 0.63), specular=1.0, reflection=0.6)),
+        Sphere(Vector3(2.5, 0, -6), 0.75, Material(Vector3(0.35, 1, 1), specular=1.0, reflection=0.7))
     ],
-    'cube': Cube(Vector3(-0.5, -0.5, -4), Vector3(0.5, 0.5, -3),
-                 Material(Vector3(1, 1, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5)),
-    'box': Cube(Vector3(-10, -10, -20), Vector3(10, 10, 0),
-                Material(Vector3(0.8, 0.8, 0.8), specular=0.1, reflection=0.1))
+    # 'box': Cube(Vector3(-7,0,0), Vector3())
 }
+    # 'cube': Cube(Vector3(-0.5, -0.5, -4), Vector3(0.5, 0.5, -3),
+    #              Material(Vector3(1, 1, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5)),
+    # 'box': Cube(Vector3(-5, -5, -10), Vector3(5, 5, 0),
+    #             Material(Vector3(0.8, 0.8, 0.8), specular=0.1, reflection=0.1))
 
 def intersect_sphere(ray, sphere):
     oc = ray.origin - sphere.center
@@ -151,8 +152,8 @@ def cube_normal(cube, point):
 def find_nearest_intersection(ray, scene):
     nearest_intersection = None
     min_distance = float('inf')
-
-    for obj in scene['spheres'] + [scene['cube'], scene['box']]:
+     # + [scene['cube'], scene['box']]
+    for obj in scene['spheres']:
         if isinstance(obj, Sphere):
             t = intersect_sphere(ray, obj)
         else:
@@ -315,8 +316,8 @@ def render(width, height, samples=1):
         for x in range(width):
             color = render_pixel(x, y, width, height, scene, samples)
             image[y, x] = [min(1, max(0, c)) for c in (color.x, color.y, color.z)]
-        if y % 10 == 0:
-            logging.debug(f"Rendered line {y}")
+        # if y % 10 == 0:
+        #     logging.debug(f"Rendered line {y}")
 
     end_time = time.time()
     logging.info(f"Render completed in {end_time - start_time:.2f} seconds")
@@ -325,8 +326,8 @@ def render(width, height, samples=1):
 
 def main():
     # Start with a very low resolution for testing
-    width, height = 200, 150
-    samples = 1  # Use only 1 sample per pixel for now
+    width, height = 2560, 1440
+    samples = 2  # Use only 1 sample per pixel for now
 
     logging.info(f"Rendering at {width}x{height} with {samples} samples per pixel...")
 
