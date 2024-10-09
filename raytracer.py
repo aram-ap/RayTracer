@@ -16,7 +16,7 @@ try:
     xp = cp
     using_gpu = True
     logging.info("Using GPU acceleration")
-except ImportError:
+except (NameError, ImportError, ModuleNotFoundError) as e:
     xp = np
     using_gpu = False
     logging.info("GPU acceleration not available, using CPU")
@@ -27,7 +27,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 try:
     xp = cp.get_array_module(cp.array([1]))
     logging.info("Using GPU acceleration")
-except ImportError:
+except NameError:
     xp = np
     logging.info("GPU acceleration not available, using CPU")
 
@@ -112,15 +112,10 @@ class AreaLight:
         self.intensity = intensity
         self.samples = samples
 
-def checkered_pattern(point, scale=1.0):
-    x = math.floor(point.x * scale)
-    z = math.floor(point.z * scale)
-    return (x + z) % 2 == 0
-
 # Scene setup
 scene = {
-    'global_light': Light(Vector3(0, 10, 10), Vector3(1, 1, 1), 0.2),
-    'area_light': AreaLight(Vector3(5, 5, 5), Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(1, 1, 1), 0.8, samples=16),
+    'global_light': Light(Vector3(0, 10, 10), Vector3(1, 1, 1), 0.5),  # Increased intensity
+    'area_light': AreaLight(Vector3(5, 5, 5), Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(1, 1, 1), 1.0, samples=16),  # Increased intensity
     'spheres': [
         Sphere(Vector3(0, 1, -5), 1, Material(Vector3(1, 0, 0), specular=0.6, reflection=0.2)),
         Sphere(Vector3(-2.5, 1, -7), 1.5, Material(Vector3(0, 1, 0), specular=0.4, reflection=1.0)),  # Mirror sphere
@@ -131,12 +126,18 @@ scene = {
         Cylinder(Vector3(1, 0.5, -3), 0.5, 1, Material(Vector3(1, 1, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5))
     ],
     'planes': [
-        Plane(Vector3(0, 0, 0), Vector3(0, 1, 0), Material(Vector3(0.8, 0.8, 0.8))),  # Floor
-        Plane(Vector3(0, 0, -10), Vector3(0, 0, 1), Material(Vector3(0.8, 0.8, 0.8))),  # Back wall
-        Plane(Vector3(-10, 0, 0), Vector3(1, 0, 0), Material(Vector3(0.8, 0.8, 0.8))),  # Left wall
-        Plane(Vector3(10, 0, 0), Vector3(-1, 0, 0), Material(Vector3(0.8, 0.8, 0.8)))   # Right wall
+        Plane(Vector3(0, -1, 0), Vector3(0, 1, 0), Material(Vector3(0.8, 0.8, 0.8))),  # Floor, moved down
+        Plane(Vector3(0, 0, -15), Vector3(0, 0, 1), Material(Vector3(0.8, 0.8, 0.8))),  # Back wall, moved back
+        Plane(Vector3(-15, 0, 0), Vector3(1, 0, 0), Material(Vector3(0.8, 0.8, 0.8))),  # Left wall, moved left
+        Plane(Vector3(15, 0, 0), Vector3(-1, 0, 0), Material(Vector3(0.8, 0.8, 0.8)))   # Right wall, moved right
     ]
 }
+
+# Modify the checkered_pattern function to make the pattern more visible
+def checkered_pattern(point, scale=0.5):  # Reduced scale to make squares larger
+    x = math.floor(point.x * scale)
+    z = math.floor(point.z * scale)
+    return (x + z) % 2 == 0
 
 def intersect_sphere(ray, sphere):
     oc = ray.origin - sphere.center
@@ -202,8 +203,9 @@ def find_nearest_intersection(ray, scene):
 
     return nearest_intersection
 
+# Modify the compute_lighting function to increase ambient lighting
 def compute_lighting(point, normal, view_dir, material, scene):
-    color = Vector3(0, 0, 0)
+    color = Vector3(0.1, 0.1, 0.1)  # Ambient light
     for light in [scene['global_light'], scene['area_light']]:
         if isinstance(light, AreaLight):
             light_contribution = Vector3(0, 0, 0)
@@ -260,22 +262,23 @@ def compute_refraction(ray, hit_point, normal, material, scene, depth):
     refract_ray = Ray(hit_point - normal * 0.001, refract_dir)
     return trace_ray(refract_ray, scene, depth + 1)
 
+# Update the trace_ray function to handle the checkered pattern
 def trace_ray(ray, scene, depth=0):
     if depth > 5:
         return Vector3(0, 0, 0)
 
     intersection = find_nearest_intersection(ray, scene)
     if not intersection:
-        return Vector3(0, 0, 0)
+        return Vector3(0.05, 0.05, 0.05)  # Very dark gray background instead of black
 
     obj, hit_point, normal = intersection
     material = obj.material
 
     if isinstance(obj, Plane):
         if checkered_pattern(hit_point):
-            color = Vector3(0.2, 0.2, 0.2)  # Dark gray
+            color = Vector3(0.1, 0.1, 0.1)  # Darker gray
         else:
-            color = Vector3(0.8, 0.8, 0.8)  # Light gray
+            color = Vector3(0.6, 0.6, 0.6)  # Lighter gray
     else:
         color = material.color
 
@@ -388,13 +391,17 @@ def main():
     else:
         image_cpu = image
 
+    # Apply gamma correction
+    image_cpu = np.power(image_cpu / 255.0, 1/2.2) * 255
+    image_cpu = image_cpu.astype(np.uint8)
+
     # Save the image
-    plt.imsave("render.png", image_cpu.astype(np.uint8))
+    plt.imsave("render.png", image_cpu)
     logging.info("Image saved as render.png")
 
     # Display the image
     plt.figure(figsize=(10, 7.5))
-    plt.imshow(image_cpu.astype(np.uint8))
+    plt.imshow(image_cpu)
     plt.axis('off')
     plt.title("Ray Traced Scene")
     plt.show()
