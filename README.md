@@ -1,4 +1,5 @@
 Use this command:
 
-pip install numpy PyOpenGL PyOpenGL_accelerate pillow tqdm
+pip install numpy cupy PyOpenGL PyOpenGL_accelerate pillow tqdm
+
 
