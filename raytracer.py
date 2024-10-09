@@ -9,7 +9,16 @@ from PIL import Image
 import time
 from tqdm import tqdm
 import logging
-import cupy as cp  # For GPU acceleration
+# At the beginning of your script, replace the CuPy import with:
+try:
+    import cupy as cp
+    xp = cp
+    using_gpu = True
+    logging.info("Using GPU acceleration")
+except ImportError:
+    xp = np
+    using_gpu = False
+    logging.info("GPU acceleration not available, using CPU")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -286,7 +295,6 @@ def trace_ray(ray, scene, depth=0):
     color = color * light_color
 
     return color
-
 def render_pixel(x, y, width, height, scene, samples=1):
     aspect_ratio = width / height
     color = Vector3(0, 0, 0)
@@ -299,7 +307,7 @@ def render_pixel(x, y, width, height, scene, samples=1):
 
 def render_chunk(args):
     x_start, x_end, y_start, y_end, width, height, scene, samples = args
-    chunk = xp.zeros((y_end - y_start, x_end - x_start, 3))
+    chunk = np.zeros((y_end - y_start, x_end - x_start, 3))
     for y in range(y_start, y_end):
         for x in range(x_start, x_end):
             color = render_pixel(x, y, width, height, scene, samples)
@@ -319,7 +327,11 @@ def render(width, height, samples=4):
 
     results = list(tqdm(pool.imap(render_chunk, chunks), total=len(chunks), desc="Rendering"))
 
-    image = xp.vstack(results)
+    image = np.vstack(results)
+
+    if using_gpu:
+        image = cp.array(image)
+
     return (image * 255).astype(xp.uint8)
 
 window = None
@@ -351,7 +363,10 @@ def keyboard(key, x, y):
         glutDestroyWindow(window)
         sys.exit()
 
+# In the main function, modify the image export:
 def export_image(image, filename="render.png"):
+    if using_gpu:
+        image = cp.asnumpy(image)
     Image.fromarray(image).save(filename)
     logging.info(f"Image exported as {filename}")
 
@@ -386,6 +401,13 @@ def main():
     glutReshapeFunc(reshape)
     glutKeyboardFunc(keyboard)
     glutMainLoop()
+    if using_gpu:
+        image_cpu = cp.asnumpy(image)
+    else:
+        image_cpu = image
+
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, image_cpu)
+
 
 if __name__ == "__main__":
     main()
