@@ -6,6 +6,20 @@ from OpenGL.GL import *
 from OpenGL.GLUT import *
 from OpenGL.GLU import *
 from PIL import Image
+import time
+from tqdm import tqdm
+import logging
+import cupy as cp  # For GPU acceleration
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Use GPU if available, otherwise use CPU
+try:
+    xp = cp.get_array_module(cp.array([1]))
+    logging.info("Using GPU acceleration")
+except ImportError:
+    xp = np
+    logging.info("GPU acceleration not available, using CPU")
 
 class Vector3:
     def __init__(self, x, y, z):
@@ -30,6 +44,13 @@ class Vector3:
     def dot(self, other):
         return self.x * other.x + self.y * other.y + self.z * other.z
 
+    def cross(self, other):
+        return Vector3(
+            self.y * other.z - self.z * other.y,
+            self.z * other.x - self.x * other.z,
+            self.x * other.y - self.y * other.x
+        )
+
     def normalize(self):
         length = math.sqrt(self.x**2 + self.y**2 + self.z**2)
         return Vector3(self.x / length, self.y / length, self.z / length)
@@ -37,7 +58,7 @@ class Vector3:
 class Ray:
     def __init__(self, origin, direction):
         self.origin = origin
-        self.direction = direction
+        self.direction = direction.normalize()
 
 class Material:
     def __init__(self, color, specular=0, reflection=0, refraction=0, refractive_index=1):
@@ -53,42 +74,44 @@ class Sphere:
         self.radius = radius
         self.material = material
 
-class Cube:
-    def __init__(self, min_point, max_point, material):
-        self.min_point = min_point
-        self.max_point = max_point
+class Cylinder:
+    def __init__(self, center, radius, height, material):
+        self.center = center
+        self.radius = radius
+        self.height = height
         self.material = material
 
-class Light:
-    def __init__(self, position, color, intensity):
-        self.position = position
-        self.color = color
-        self.intensity = intensity
+class Plane:
+    def __init__(self, point, normal, material):
+        self.point = point
+        self.normal = normal.normalize()
+        self.material = material
 
-class AreaLight:
-    def __init__(self, position, u, v, color, intensity, samples=4):
-        self.position = position
-        self.u = u
-        self.v = v
-        self.color = color
-        self.intensity = intensity
-        self.samples = samples
+def checkered_pattern(point, scale=1.0):
+    x = math.floor(point.x * scale)
+    z = math.floor(point.z * scale)
+    return (x + z) % 2 == 0
 
 # Scene setup
 scene = {
-    'global_light': Light(Vector3(0, 10, 10), Vector3(1, 1, 1), 0.9),
-    'area_light': AreaLight(Vector3(5, 5, 5), Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(1, 1, 1), 0.9, samples=12),
+    'global_light': Light(Vector3(0, 10, 10), Vector3(1, 1, 1), 0.2),
+    'area_light': AreaLight(Vector3(5, 5, 5), Vector3(1, 0, 0), Vector3(0, 1, 0), Vector3(1, 1, 1), 0.8, samples=16),
     'spheres': [
-        Sphere(Vector3(0, 0, -5), 1, Material(Vector3(1, 0.59, 0.35), specular=1.0, reflection=0.4)),
-        Sphere(Vector3(-2.5, 0, -7), 1.5, Material(Vector3(0.35, 1, 0.63), specular=1.0, reflection=0.6)),
-        Sphere(Vector3(2.5, 0, -6), 0.75, Material(Vector3(0.35, 1, 1), specular=1.0, reflection=0.7))
+        Sphere(Vector3(0, 1, -5), 1, Material(Vector3(1, 0, 0), specular=0.6, reflection=0.2)),
+        Sphere(Vector3(-2.5, 1, -7), 1.5, Material(Vector3(0, 1, 0), specular=0.4, reflection=1.0)),  # Mirror sphere
+        Sphere(Vector3(2.5, 1, -6), 0.75, Material(Vector3(0, 0, 1), specular=0.5, reflection=0.1))
     ],
-    # 'box': Cube(Vector3(-7,0,0), Vector3())
+    'cylinders': [
+        Cylinder(Vector3(-1, 0.5, -4), 0.5, 1, Material(Vector3(1, 1, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5)),
+        Cylinder(Vector3(1, 0.5, -3), 0.5, 1, Material(Vector3(1, 1, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5))
+    ],
+    'planes': [
+        Plane(Vector3(0, 0, 0), Vector3(0, 1, 0), Material(Vector3(0.8, 0.8, 0.8))),  # Floor
+        Plane(Vector3(0, 0, -10), Vector3(0, 0, 1), Material(Vector3(0.8, 0.8, 0.8))),  # Back wall
+        Plane(Vector3(-10, 0, 0), Vector3(1, 0, 0), Material(Vector3(0.8, 0.8, 0.8))),  # Left wall
+        Plane(Vector3(10, 0, 0), Vector3(-1, 0, 0), Material(Vector3(0.8, 0.8, 0.8)))   # Right wall
+    ]
 }
-    # 'cube': Cube(Vector3(-0.5, -0.5, -4), Vector3(0.5, 0.5, -3),
-    #              Material(Vector3(1, 1, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5)),
-    # 'box': Cube(Vector3(-5, -5, -10), Vector3(5, 5, 0),
-    #             Material(Vector3(0.8, 0.8, 0.8), specular=0.1, reflection=0.1))
 
 def intersect_sphere(ray, sphere):
     oc = ray.origin - sphere.center
@@ -103,70 +126,53 @@ def intersect_sphere(ray, sphere):
         return None
     return t
 
-def intersect_cube(ray, cube):
-    t_min = float('-inf')
-    t_max = float('inf')
+def intersect_cylinder(ray, cylinder):
+    oc = ray.origin - cylinder.center
+    a = ray.direction.x**2 + ray.direction.z**2
+    b = 2 * (oc.x * ray.direction.x + oc.z * ray.direction.z)
+    c = oc.x**2 + oc.z**2 - cylinder.radius**2
+    discriminant = b**2 - 4*a*c
+    if discriminant < 0:
+        return None
+    t = (-b - math.sqrt(discriminant)) / (2*a)
+    if t < 0:
+        return None
+    y = ray.origin.y + t * ray.direction.y
+    if y < cylinder.center.y or y > cylinder.center.y + cylinder.height:
+        return None
+    return t
 
-    for i in range(3):
-        if i == 0:
-            min_val, max_val = cube.min_point.x, cube.max_point.x
-            origin = ray.origin.x
-            direction = ray.direction.x
-        elif i == 1:
-            min_val, max_val = cube.min_point.y, cube.max_point.y
-            origin = ray.origin.y
-            direction = ray.direction.y
-        else:
-            min_val, max_val = cube.min_point.z, cube.max_point.z
-            origin = ray.origin.z
-            direction = ray.direction.z
-
-        if abs(direction) < 1e-8:  # Check for near-zero direction
-            if origin < min_val or origin > max_val:
-                return None
-        else:
-            t1 = (min_val - origin) / direction
-            t2 = (max_val - origin) / direction
-            if t1 > t2:
-                t1, t2 = t2, t1
-            t_min = max(t_min, t1)
-            t_max = min(t_max, t2)
-            if t_min > t_max:
-                return None
-
-    return t_min if t_min > 0 else t_max
-
-def sphere_normal(sphere, point):
-    return (point - sphere.center).normalize()
-
-def cube_normal(cube, point):
-    epsilon = 1e-5
-    if abs(point.x - cube.min_point.x) < epsilon: return Vector3(-1, 0, 0)
-    if abs(point.x - cube.max_point.x) < epsilon: return Vector3(1, 0, 0)
-    if abs(point.y - cube.min_point.y) < epsilon: return Vector3(0, -1, 0)
-    if abs(point.y - cube.max_point.y) < epsilon: return Vector3(0, 1, 0)
-    if abs(point.z - cube.min_point.z) < epsilon: return Vector3(0, 0, -1)
-    if abs(point.z - cube.max_point.z) < epsilon: return Vector3(0, 0, 1)
-    return Vector3(0, 1, 0)  # Default case, shouldn't happen
+def intersect_plane(ray, plane):
+    denom = ray.direction.dot(plane.normal)
+    if abs(denom) > 1e-6:
+        t = (plane.point - ray.origin).dot(plane.normal) / denom
+        if t > 0:
+            return t
+    return None
 
 def find_nearest_intersection(ray, scene):
     nearest_intersection = None
     min_distance = float('inf')
-     # + [scene['cube'], scene['box']]
-    for obj in scene['spheres']:
+
+    for obj in scene['spheres'] + scene['cylinders'] + scene['planes']:
         if isinstance(obj, Sphere):
             t = intersect_sphere(ray, obj)
-        else:
-            t = intersect_cube(ray, obj)
+        elif isinstance(obj, Cylinder):
+            t = intersect_cylinder(ray, obj)
+        else:  # Plane
+            t = intersect_plane(ray, obj)
 
         if t and t < min_distance:
             min_distance = t
             if isinstance(obj, Sphere):
                 point = ray.origin + ray.direction * t
-                normal = sphere_normal(obj, point)
-            else:
+                normal = (point - obj.center).normalize()
+            elif isinstance(obj, Cylinder):
                 point = ray.origin + ray.direction * t
-                normal = cube_normal(obj, point)
+                normal = Vector3(point.x - obj.center.x, 0, point.z - obj.center.z).normalize()
+            else:  # Plane
+                point = ray.origin + ray.direction * t
+                normal = obj.normal
             nearest_intersection = (obj, point, normal)
 
     return nearest_intersection
@@ -239,7 +245,14 @@ def trace_ray(ray, scene, depth=0):
 
     obj, hit_point, normal = intersection
     material = obj.material
-    color = material.color
+
+    if isinstance(obj, Plane):
+        if checkered_pattern(hit_point):
+            color = Vector3(0.2, 0.2, 0.2)  # Dark gray
+        else:
+            color = Vector3(0.8, 0.8, 0.8)  # Light gray
+    else:
+        color = material.color
 
     # Compute reflection
     if material.reflection > 0:
@@ -258,6 +271,43 @@ def trace_ray(ray, scene, depth=0):
     color = color * light_color
 
     return color
+
+def render_pixel(x, y, width, height, scene, samples=1):
+    aspect_ratio = width / height
+    color = Vector3(0, 0, 0)
+    for _ in range(samples):
+        u = ((x + random.random()) / width) * 2 - 1
+        v = -((y + random.random()) / height * 2 - 1) / aspect_ratio
+        ray = Ray(Vector3(0, 0, 0), Vector3(u, v, -1).normalize())
+        color = color + trace_ray(ray, scene)
+    return color * (1 / samples)
+
+def render_chunk(args):
+    x_start, x_end, y_start, y_end, width, height, scene, samples = args
+    chunk = xp.zeros((y_end - y_start, x_end - x_start, 3))
+    for y in range(y_start, y_end):
+        for x in range(x_start, x_end):
+            color = render_pixel(x, y, width, height, scene, samples)
+            chunk[y - y_start, x - x_start] = [min(1, max(0, c)) for c in (color.x, color.y, color.z)]
+    return chunk
+
+def render(width, height, samples=4):
+    num_threads = multiprocessing.cpu_count()
+    chunk_height = height // num_threads
+
+    pool = multiprocessing.Pool(processes=num_threads)
+    chunks = []
+    for i in range(num_threads):
+        y_start = i * chunk_height
+        y_end = y_start + chunk_height if i < num_threads - 1 else height
+        chunks.append((0, width, y_start, y_end, width, height, scene, samples))
+
+    results = list(tqdm(pool.imap(render_chunk, chunks), total=len(chunks), desc="Rendering"))
+
+    image = xp.vstack(results)
+    return (image * 255).astype(xp.uint8)
+
+window = None
 
 def display():
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
@@ -280,65 +330,35 @@ def reshape(w, h):
     glLoadIdentity()
     gluOrtho2D(-1, 1, -1, 1)
     glMatrixMode(GL_MODELVIEW)
-import logging
-import time
-from tqdm import tqdm
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+def keyboard(key, x, y):
+    if key == b'\x1b':  # ESC key
+        glutDestroyWindow(window)
+        sys.exit()
 
-def render_pixel(x, y, width, height, scene, samples=1):
-    aspect_ratio = width / height
-    color = Vector3(0, 0, 0)
-    for _ in range(samples):
-        u = ((x + random.random()) / width) * 2 - 1
-        v = -((y + random.random()) / height * 2 - 1) / aspect_ratio
-        ray = Ray(Vector3(0, 0, 0), Vector3(u, v, -1).normalize())
-        color = color + trace_ray(ray, scene)
-    return color * (1 / samples)
-
-def render_chunk(args):
-    x_start, x_end, y_start, y_end, width, height, scene, samples = args
-    chunk = np.zeros((y_end - y_start, x_end - x_start, 3))
-    for y in range(y_start, y_end):
-        for x in range(x_start, x_end):
-            color = render_pixel(x, y, width, height, scene, samples)
-            chunk[y - y_start, x - x_start] = [min(1, max(0, c)) for c in (color.x, color.y, color.z)]
-        if y % 10 == 0:
-            logging.debug(f"Rendered line {y} in chunk ({x_start}, {y_start}) to ({x_end}, {y_end})")
-    return chunk
-
-def render(width, height, samples=1):
-    logging.info(f"Starting render: {width}x{height} with {samples} samples per pixel")
-    start_time = time.time()
-
-    image = np.zeros((height, width, 3))
-    for y in tqdm(range(height), desc="Rendering", unit="line"):
-        for x in range(width):
-            color = render_pixel(x, y, width, height, scene, samples)
-            image[y, x] = [min(1, max(0, c)) for c in (color.x, color.y, color.z)]
-        # if y % 10 == 0:
-        #     logging.debug(f"Rendered line {y}")
-
-    end_time = time.time()
-    logging.info(f"Render completed in {end_time - start_time:.2f} seconds")
-
-    return (image * 255).astype(np.uint8)
+def export_image(image, filename="render.png"):
+    Image.fromarray(image).save(filename)
+    logging.info(f"Image exported as {filename}")
 
 def main():
-    # Start with a very low resolution for testing
-    width, height = 2560, 1440
-    samples = 2  # Use only 1 sample per pixel for now
+    global window
+    width, height = 800, 600
+    samples = 4
 
     logging.info(f"Rendering at {width}x{height} with {samples} samples per pixel...")
+    start_time = time.time()
 
     image = render(width, height, samples)
 
-    logging.info("Rendering complete. Displaying image...")
+    end_time = time.time()
+    logging.info(f"Rendering complete. Time taken: {end_time - start_time:.2f} seconds")
+
+    export_image(image)
 
     glutInit()
     glutInitDisplayMode(GLUT_RGBA | GLUT_DOUBLE | GLUT_DEPTH)
     glutInitWindowSize(width, height)
-    glutCreateWindow(b"Ray Traced Scene")
+    window = glutCreateWindow(b"Ray Traced Scene")
 
     glEnable(GL_TEXTURE_2D)
     texture = glGenTextures(1)
@@ -349,6 +369,7 @@ def main():
 
     glutDisplayFunc(display)
     glutReshapeFunc(reshape)
+    glutKeyboardFunc(keyboard)
     glutMainLoop()
 
 if __name__ == "__main__":
