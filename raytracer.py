@@ -71,12 +71,13 @@ class Ray:
         self.direction = direction.normalize()
 
 class Material:
-    def __init__(self, color, specular=0, reflection=0, refraction=0, refractive_index=1):
+    def __init__(self, color, specular=0, reflection=0, refraction=0, refractive_index=1, roughness=0):
         self.color = color
         self.specular = specular
         self.reflection = reflection
         self.refraction = refraction
         self.refractive_index = refractive_index
+        self.roughness = roughness  # 0 is smooth, 1 is very rough
 
 class Sphere:
     def __init__(self, center, radius, material):
@@ -113,7 +114,6 @@ class AreaLight:
         self.samples = samples
 
 # Scene setup
-# Updated scene setup
 scene = {
     'global_light': Light(Vector3(0, 10, 0), Vector3(1, 1, 1), 0.5),
     'lights': [
@@ -123,21 +123,32 @@ scene = {
         Light(Vector3(0, 5, 0), Vector3(1, 1, 1), 0.5),
     ],
     'spheres': [
-        Sphere(Vector3(0, 1, -5), 1, Material(Vector3(1, 0, 0), specular=0.3, reflection=0.1)),  # Red sphere
-        Sphere(Vector3(-2.5, 1, -7), 1.5, Material(Vector3(0, 1, 0), specular=0.3, reflection=0.4)),  # Green sphere (mirror-like)
-        Sphere(Vector3(2.5, 1, -6), 0.75, Material(Vector3(0, 0, 1), specular=0.3, reflection=0.1))  # Blue sphere
+        Sphere(Vector3(0, 1, -5), 1, Material(Vector3(1, 0, 0), specular=0.3, reflection=0.1, roughness=0.2)),  # Slightly rough red sphere
+        Sphere(Vector3(-2.5, 1, -7), 1.5, Material(Vector3(0, 1, 0), specular=0.3, reflection=0.4, roughness=0.1)),  # Smoother green sphere
+        Sphere(Vector3(2.5, 1, -6), 0.75, Material(Vector3(0, 0, 1), specular=0.3, reflection=0.1, roughness=0.5))  # Rougher blue sphere
     ],
     'cylinders': [
-        Cylinder(Vector3(-1, 0.5, -4), 0.5, 1, Material(Vector3(1, 1, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5)),
-        Cylinder(Vector3(1, 0.5, -3), 0.5, 1, Material(Vector3(1, 1, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5))
+        Cylinder(Vector3(-1, 0.5, -4), 0.5, 1, Material(Vector3(1, 1, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5, roughness=0.05)),
+        Cylinder(Vector3(1, 0.5, -3), 0.5, 1, Material(Vector3(1, 1, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5, roughness=0.05))
     ],
     'planes': [
-        Plane(Vector3(0, -1, 0), Vector3(0, 1, 0), Material(Vector3(0.9, 0.9, 0.9))),  # Floor, slightly brighter
-        Plane(Vector3(0, 0, -12), Vector3(0, 0, 1), Material(Vector3(0.9, 0.9, 0.9))),  # Back wall
-        Plane(Vector3(-8, 0, 0), Vector3(1, 0, 0), Material(Vector3(0.9, 0.9, 0.9))),  # Left wall
-        Plane(Vector3(8, 0, 0), Vector3(-1, 0, 0), Material(Vector3(0.9, 0.9, 0.9)))   # Right wall
+        Plane(Vector3(0, -1, 0), Vector3(0, 1, 0), Material(Vector3(0.9, 0.9, 0.9), roughness=0.3)),  # Slightly rough floor
+        Plane(Vector3(0, 0, -12), Vector3(0, 0, 1), Material(Vector3(0.9, 0.9, 0.9), roughness=0.3)),  # Back wall
+        Plane(Vector3(-8, 0, 0), Vector3(1, 0, 0), Material(Vector3(0.9, 0.9, 0.9), roughness=0.3)),  # Left wall
+        Plane(Vector3(8, 0, 0), Vector3(-1, 0, 0), Material(Vector3(0.9, 0.9, 0.9), roughness=0.3))   # Right wall
     ]
 }
+
+def random_in_unit_sphere():
+    while True:
+        p = Vector3(random.uniform(-1, 1), random.uniform(-1, 1), random.uniform(-1, 1))
+        if p.dot(p) < 1:
+            return p
+
+def perturb_vector(vector, roughness):
+    random_vec = random_in_unit_sphere()
+    return (vector + random_vec * roughness).normalize()
+
 
 def checkered_pattern(point, scale=0.5):
     x = math.floor(point.x * scale)
@@ -217,17 +228,17 @@ def compute_lighting(point, normal, view_dir, material, scene):
 
         if not shadow_intersection or (shadow_intersection[0].material.refraction > 0):
             diffuse = max(0, normal.dot(light_dir))
-            color = color + material.color * light.color * light.intensity * diffuse * 0.5  # Reduced diffuse contribution
+            color = color + material.color * light.color * light.intensity * diffuse * 0.5
 
             if material.specular > 0:
-                reflect_dir = light_dir - normal * (2 * light_dir.dot(normal))
-                specular = max(0, view_dir.dot(reflect_dir)) ** 50
-                color = color + light.color * light.intensity * material.specular * specular * 0.3  # Reduced specular contribution
+                reflect_dir = perturb_vector(light_dir - normal * (2 * light_dir.dot(normal)), material.roughness)
+                specular = max(0, view_dir.dot(reflect_dir)) ** (50 * (1 - material.roughness))
+                color = color + light.color * light.intensity * material.specular * specular * 0.3
 
     return color
 
 def trace_ray(ray, scene, depth=0):
-    if depth > 3:  # Reduce max depth to prevent over-brightening
+    if depth > 3:
         return Vector3(0, 0, 0)
 
     intersection = find_nearest_intersection(ray, scene)
@@ -252,12 +263,12 @@ def trace_ray(ray, scene, depth=0):
 
     # Compute reflection
     if material.reflection > 0 and depth < 3:
-        reflect_dir = ray.direction - normal * (2 * ray.direction.dot(normal))
+        reflect_dir = perturb_vector(ray.direction - normal * (2 * ray.direction.dot(normal)), material.roughness)
         reflect_ray = Ray(hit_point + normal * 0.001, reflect_dir)
         reflect_color = trace_ray(reflect_ray, scene, depth + 1)
         color = color * (1 - material.reflection) + reflect_color * material.reflection
 
-    # Compute refraction
+    # Compute refraction (unchanged)
     if material.refraction > 0:
         refract_color = compute_refraction(ray, hit_point, normal, material, scene, depth)
         color = color * (1 - material.refraction) + refract_color * material.refraction
