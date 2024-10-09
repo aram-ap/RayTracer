@@ -13,6 +13,28 @@ import logging
 # At the beginning of your script, replace the CuPy import with:
 try:
     import cupy as cp
+
+    ray_trace_kernel = cp.RawKernel(r'''
+                                    extern "C" __global__
+                                    void ray_trace_kernel(float* output, int width, int height, int samples) {
+                                        int x = blockIdx.x * blockDim.x + threadIdx.x;
+                                        int y = blockIdx.y * blockDim.y + threadIdx.y;
+                                        if (x >= width || y >= height) return;
+
+                                        // Implement ray tracing logic here
+                                        // This is a placeholder; you'll need to port your ray tracing code to CUDA
+                                        float r = float(x) / float(width);
+                                        float g = float(y) / float(height);
+                                        float b = 0.2;
+
+                                        int idx = (y * width + x) * 3;
+                                        output[idx] = r;
+                                        output[idx + 1] = g;
+                                        output[idx + 2] = b;
+                                        }
+                                    ''', 'ray_trace_kernel')
+
+
     xp = cp
     using_gpu = True
     logging.info("Using GPU acceleration")
@@ -314,24 +336,22 @@ def render_chunk(args):
     return chunk
 
 def render(width, height, samples=4):
-    num_threads = multiprocessing.cpu_count()
-    chunk_height = height // num_threads
+    output = cp.zeros((height, width, 3), dtype=cp.float32)
 
-    pool = multiprocessing.Pool(processes=num_threads)
-    chunks = []
-    for i in range(num_threads):
-        y_start = i * chunk_height
-        y_end = y_start + chunk_height if i < num_threads - 1 else height
-        chunks.append((0, width, y_start, y_end, width, height, scene, samples))
+    # Determine grid and block sizes
+    threadsperblock = (16, 16)
+    blockspergrid_x = (width + threadsperblock[0] - 1) // threadsperblock[0]
+    blockspergrid_y = (height + threadsperblock[1] - 1) // threadsperblock[1]
+    blockspergrid = (blockspergrid_x, blockspergrid_y)
 
-    results = list(tqdm(pool.imap(render_chunk, chunks), total=len(chunks), desc="Rendering"))
+    # Launch the kernel
+    ray_trace_kernel(
+        grid=blockspergrid,
+        block=threadsperblock,
+        args=(output, width, height, samples)
+    )
 
-    image = np.vstack(results)
-
-    if using_gpu:
-        image = cp.array(image)
-
-    return (image * 255).astype(xp.uint8)
+    return output
 
 window = None
 
@@ -381,13 +401,11 @@ def main():
     end_time = time.time()
     logging.info(f"Rendering complete. Time taken: {end_time - start_time:.2f} seconds")
 
-    if using_gpu:
-        image_cpu = cp.asnumpy(image)
-    else:
-        image_cpu = image
+    # Move the image to CPU for post-processing and display
+    image_cpu = cp.asnumpy(image)
 
     # Apply gamma correction and tone mapping
-    image_cpu = np.power(image_cpu / 255.0, 1/2.2)  # Gamma correction
+    image_cpu = np.power(image_cpu, 1/2.2)  # Gamma correction
     image_cpu = np.clip(image_cpu * 1.2, 0, 1)  # Slightly increase brightness and clip
     image_cpu = (image_cpu * 255).astype(np.uint8)
 
