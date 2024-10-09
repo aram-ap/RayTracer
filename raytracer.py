@@ -87,6 +87,21 @@ class Plane:
         self.normal = normal.normalize()
         self.material = material
 
+class Light:
+    def __init__(self, position, color, intensity):
+        self.position = position
+        self.color = color
+        self.intensity = intensity
+
+class AreaLight:
+    def __init__(self, position, u, v, color, intensity, samples=4):
+        self.position = position
+        self.u = u
+        self.v = v
+        self.color = color
+        self.intensity = intensity
+        self.samples = samples
+
 def checkered_pattern(point, scale=1.0):
     x = math.floor(point.x * scale)
     z = math.floor(point.z * scale)
