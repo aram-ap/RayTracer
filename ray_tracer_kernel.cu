@@ -1,6 +1,40 @@
 // ray_tracer_kernel.cu
 #include <curand_kernel.h>
 #include <math_constants.h>
+// Vector operations
+__device__ float3 vector_add(float3 a, float3 b) {
+    return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
+}
+
+__device__ float3 vector_subtract(float3 a, float3 b) {
+    return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+__device__ float3 vector_multiply(float3 a, float b) {
+    return make_float3(a.x * b, a.y * b, a.z * b);
+}
+
+__device__ float3 vector_multiply_vec(float3 a, float3 b) {
+    return make_float3(a.x * b.x, a.y * b.y, a.z * b.z);
+}
+
+__device__ float vector_dot(float3 a, float3 b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+__device__ float3 vector_cross(float3 a, float3 b) {
+    return make_float3(a.y * b.z - a.z * b.y,
+                       a.z * b.x - a.x * b.z,
+                       a.x * b.y - a.y * b.x);
+}
+
+__device__ float3 vector_normalize(float3 v) {
+    float length = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
+    if (length > 0) {
+        return make_float3(v.x / length, v.y / length, v.z / length);
+    }
+    return v;
+}
 
 struct Ray {
     float3 origin;
@@ -47,18 +81,79 @@ struct Cube {
     Material material;
 };
 
-// ... (keep all vector operations as they were) ...
 
 __device__ bool intersect_sphere(Ray ray, Sphere sphere, float* t) {
-    // ... (keep the sphere intersection code as it was) ...
+    float3 oc = vector_subtract(ray.origin, sphere.center);
+    float a = vector_dot(ray.direction, ray.direction);
+    float b = 2.0f * vector_dot(oc, ray.direction);
+    float c = vector_dot(oc, oc) - sphere.radius * sphere.radius;
+    float discriminant = b * b - 4 * a * c;
+
+    if (discriminant > 0) {
+        float temp = (-b - sqrtf(discriminant)) / (2.0f * a);
+        if (temp > 0.001f) {
+            *t = temp;
+            return true;
+        }
+        temp = (-b + sqrtf(discriminant)) / (2.0f * a);
+        if (temp > 0.001f) {
+            *t = temp;
+            return true;
+        }
+    }
+    return false;
 }
 
 __device__ bool intersect_cylinder(Ray ray, Cylinder cylinder, float* t) {
-    // ... (keep the cylinder intersection code as it was) ...
+    // Simplified cylinder intersection (infinite height)
+    float3 ro = vector_subtract(ray.origin, cylinder.center);
+    float a = ray.direction.x * ray.direction.x + ray.direction.z * ray.direction.z;
+    float b = 2 * (ro.x * ray.direction.x + ro.z * ray.direction.z);
+    float c = ro.x * ro.x + ro.z * ro.z - cylinder.radius * cylinder.radius;
+
+    float discriminant = b * b - 4 * a * c;
+    if (discriminant < 0) return false;
+
+    float t0 = (-b - sqrtf(discriminant)) / (2 * a);
+    float t1 = (-b + sqrtf(discriminant)) / (2 * a);
+
+    if (t0 > t1) {
+        float temp = t0;
+        t0 = t1;
+        t1 = temp;
+    }
+
+    float y0 = ro.y + t0 * ray.direction.y;
+    float y1 = ro.y + t1 * ray.direction.y;
+
+    float cylinder_y_min = -cylinder.height / 2;
+    float cylinder_y_max = cylinder.height / 2;
+
+    if (y0 < cylinder_y_min) {
+        if (y1 < cylinder_y_min) return false;
+        float th = t0 + (t1 - t0) * (cylinder_y_min - y0) / (y1 - y0);
+        if (th > 0) {
+            *t = th;
+            return true;
+        }
+    } else if (y0 >= cylinder_y_min && y0 <= cylinder_y_max) {
+        if (t0 > 0) {
+            *t = t0;
+            return true;
+        }
+    }
+
+    return false;
 }
 
 __device__ bool intersect_plane(Ray ray, Plane plane, float* t) {
-    // ... (keep the plane intersection code as it was) ...
+    float denom = vector_dot(plane.normal, ray.direction);
+    if (fabsf(denom) > 1e-6) {
+        float3 p0l0 = vector_subtract(plane.point, ray.origin);
+        *t = vector_dot(p0l0, plane.normal) / denom;
+        return (*t >= 0);
+    }
+    return false;
 }
 
 __device__ bool intersect_rectangle(Ray ray, Rectangle rect, float* t) {

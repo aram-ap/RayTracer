@@ -3,6 +3,8 @@ import matplotlib.pyplot as plt
 import time
 import os
 from tqdm import tqdm
+import multiprocessing
+from functools import partial
 
 # Try to import CuPy, but fall back to NumPy if it's not available
 try:
@@ -107,46 +109,129 @@ def initialize_data(scene):
 
     return data
 
-def cpu_ray_color(ray, scene_data):
-    # This is a very basic implementation. You should expand this for better results.
+def normalize(vector):
+    return vector / np.linalg.norm(vector)
+
+def reflect(vector, normal):
+    return vector - 2 * np.dot(vector, normal) * normal
+
+def intersect_sphere(ray_origin, ray_direction, sphere):
+    center = sphere[:3]
+    radius = sphere[3]
+
+    oc = ray_origin - center
+    a = np.dot(ray_direction, ray_direction)
+    b = 2.0 * np.dot(oc, ray_direction)
+    c = np.dot(oc, oc) - radius*radius
+    discriminant = b*b - 4*a*c
+
+    if discriminant < 0:
+        return np.inf
+
+    t = (-b - np.sqrt(discriminant)) / (2.0*a)
+    return t if t > 0 else np.inf
+
+def intersect_plane(ray_origin, ray_direction, plane):
+    point = plane[:3]
+    normal = plane[3:6]
+
+    denom = np.dot(ray_direction, normal)
+    if abs(denom) > 1e-6:
+        t = np.dot(point - ray_origin, normal) / denom
+        return t if t > 0 else np.inf
+    return np.inf
+
+def cpu_ray_color(ray_origin, ray_direction, scene_data, depth=0):
+    if depth > 3:  # Limit recursion depth
+        return np.zeros(3)
+
+    closest_t = np.inf
+    closest_obj = None
+
+    # Check sphere intersections
     for sphere in scene_data['spheres']:
-        center = sphere[:3]
-        radius = sphere[3]
-        color = sphere[4:7]
+        t = intersect_sphere(ray_origin, ray_direction, sphere)
+        if t < closest_t:
+            closest_t = t
+            closest_obj = (sphere, 'sphere')
 
-        oc = ray[0] - center
-        a = np.dot(ray[1], ray[1])
-        b = 2.0 * np.dot(oc, ray[1])
-        c = np.dot(oc, oc) - radius*radius
-        discriminant = b*b - 4*a*c
+    # Check plane intersections
+    for plane in scene_data['planes']:
+        t = intersect_plane(ray_origin, ray_direction, plane)
+        if t < closest_t:
+            closest_t = t
+            closest_obj = (plane, 'plane')
 
-        if discriminant > 0:
-            return color
+    if closest_obj is None:
+        # Sky color
+        t = 0.5 * (ray_direction[1] + 1.0)
+        return (1.0-t)*np.array([1.0, 1.0, 1.0]) + t*np.array([0.5, 0.7, 1.0])
 
-    # If no intersection, return background color
-    t = 0.5 * (ray[1][1] + 1.0)
-    return (1.0-t)*np.array([1.0, 1.0, 1.0]) + t*np.array([0.5, 0.7, 1.0])
+    obj, obj_type = closest_obj
+    hit_point = ray_origin + closest_t * ray_direction
 
+    if obj_type == 'sphere':
+        normal = normalize(hit_point - obj[:3])
+        color = obj[4:7]
+        specular = obj[7]
+        reflection = obj[8]
+    else:  # plane
+        normal = obj[3:6]
+        color = obj[6:9]
+        specular = obj[9]
+        reflection = obj[10]
 
-def render_cpu(width, height, samples, data):
-    output = np.zeros((height, width, 3), dtype=np.float32)
+    # Diffuse lighting
+    light_dir = normalize(np.array([5, 5, 5]) - hit_point)
+    diffuse = np.maximum(np.dot(normal, light_dir), 0)
 
-    for j in tqdm(range(height), desc="Rendering", unit="lines"):
+    # Specular lighting
+    reflect_dir = reflect(-light_dir, normal)
+    spec = np.power(np.maximum(np.dot(-ray_direction, reflect_dir), 0), 50)
+    specular_intensity = specular * spec
+
+    # Reflection
+    reflect_color = np.zeros(3)
+    if reflection > 0 and depth < 3:
+        reflect_dir = reflect(ray_direction, normal)
+        reflect_origin = hit_point + normal * 0.001  # Offset to avoid self-intersection
+        reflect_color = cpu_ray_color(reflect_origin, reflect_dir, scene_data, depth + 1)
+
+    return color * (diffuse + 0.1) + specular_intensity + reflection * reflect_color
+
+def render_chunk(chunk_data):
+    y_start, y_end, width, height, samples, scene_data = chunk_data
+    chunk = np.zeros((y_end - y_start, width, 3), dtype=np.float32)
+
+    for j in range(y_start, y_end):
         for i in range(width):
             color = np.zeros(3)
             for _ in range(samples):
                 u = (i + np.random.random()) / width
                 v = (j + np.random.random()) / height
                 ray_origin = np.array([0, 0, 0])
-                ray_direction = np.array([(2*u - 1)*width/height, -(2*v - 1), -1])
-                ray_direction /= np.linalg.norm(ray_direction)
+                ray_direction = normalize(np.array([(2*u - 1)*width/height, -(2*v - 1), -1]))
 
-                color += cpu_ray_color([ray_origin, ray_direction], data)
+                color += cpu_ray_color(ray_origin, ray_direction, scene_data)
 
             color /= samples
-            output[height-j-1, i] = np.clip(color, 0, 1)
+            chunk[j - y_start, i] = np.clip(color, 0, 1)
 
-    return output
+    return chunk
+
+def render_cpu(width, height, samples, data):
+    num_cores = multiprocessing.cpu_count()
+    chunk_size = height // num_cores
+
+    chunks = [
+        (i * chunk_size, min((i + 1) * chunk_size, height), width, height, samples, data)
+        for i in range(num_cores)
+    ]
+
+    with multiprocessing.Pool(num_cores) as pool:
+        results = list(tqdm(pool.imap(render_chunk, chunks), total=len(chunks), desc="Rendering"))
+
+    return np.vstack(results)[::-1]  # Flip vertically
 
 def render_gpu(width, height, samples, data):
     output = cp.zeros((height, width, 3), dtype=cp.float32)
@@ -221,13 +306,23 @@ def main():
     data = initialize_data(scene)
 
     if use_gpu:
-        # Load and compile the CUDA kernel
-        kernel_path = os.path.join(os.path.dirname(__file__), 'ray_tracer_kernel.cu')
+        import os
+
+        # Get the directory of the current script
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # Construct the path to the CUDA kernel file
+        kernel_path = os.path.join(current_dir, 'ray_tracer_kernel.cu')
+
+        # Read the CUDA kernel code from the file
         with open(kernel_path, 'r') as f:
-            kernel_code = f.read()
+            cuda_code = f.read()
 
         global ray_trace_kernel
-        ray_trace_kernel = cp.RawKernel(kernel_code, 'ray_trace_kernel')
+
+        # Create the RawKernel using the code from the file
+        ray_trace_kernel = cp.RawKernel(cuda_code, 'ray_trace_kernel')
+
 
     print(f"Rendering at {width}x{height} with {samples} samples per pixel...")
     start_time = time.time()
