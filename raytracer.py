@@ -16,6 +16,7 @@ try:
 
     ray_trace_kernel = cp.RawKernel(r'''
                                     #include <curand_kernel.h>
+                                    #include <math_constants.h>
 
                                     struct Ray {
                                         float3 origin;
@@ -74,7 +75,7 @@ try:
                                         }
 
 __device__ float3 trace_ray(Ray ray, Sphere* spheres, int num_spheres, float3 light_pos) {
-        float closest_t = INFINITY;
+        float closest_t = CUDART_INF_F;
         Sphere* closest_sphere = NULL;
 
         for (int i = 0; i < num_spheres; i++) {
@@ -151,7 +152,6 @@ void ray_trace_kernel(float* output, int width, int height, int samples,
                               output[idx + 2] = color.z;
                               }
 ''', 'ray_trace_kernel')
-
 
     xp = cp
     using_gpu = True
