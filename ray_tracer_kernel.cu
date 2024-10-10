@@ -1,5 +1,15 @@
 // ray_tracer_kernel.cu
 
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline __device__ void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+   if (code != cudaSuccess)
+   {
+      printf("GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+      if (abort) assert(0);
+   }
+}
+
 #include <curand_kernel.h>
 #include <math_constants.h>
 
@@ -154,6 +164,7 @@ void ray_trace_kernel(float* output, int width, int height, int samples,
     color = vector_multiply(color, 1.0f / float(samples));
 
     int idx = (y * width + x) * 3;
+    gpuErrchk(cudaDeviceSynchronize());  // Add this line
     output[idx] = fminf(color.x, 1.0f);
     output[idx + 1] = fminf(color.y, 1.0f);
     output[idx + 2] = fminf(color.z, 1.0f);

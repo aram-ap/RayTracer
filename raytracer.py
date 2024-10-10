@@ -151,7 +151,6 @@ scene = {
 def initialize_gpu_data(scene):
     gpu_data = {}
 
-    # Convert spheres data to CuPy array
     gpu_data['spheres'] = cp.array([
         [s.center.x, s.center.y, s.center.z, s.radius,
          s.material.color.x, s.material.color.y, s.material.color.z,
@@ -376,6 +375,11 @@ def render(width, height, samples, gpu_data):
               gpu_data['spheres'], gpu_data['spheres'].shape[0])
     )
 
+    # Add this error checking
+    cp.cuda.runtime.deviceSynchronize()
+    if cp.cuda.runtime.getLastError() != 0:
+        print("CUDA error: {}".format(cp.cuda.runtime.getLastError()))
+
     return output
 
 window = None
@@ -425,6 +429,12 @@ def main():
     start_time = time.time()
 
     image = render(width, height, samples, gpu_data)
+
+    print("Image shape:", image.shape)
+    print("Image min:", cp.min(image))
+    print("Image max:", cp.max(image))
+
+    image_cpu = cp.asnumpy(image)
 
     end_time = time.time()
     logging.info(f"Rendering complete. Time taken: {end_time - start_time:.2f} seconds")
