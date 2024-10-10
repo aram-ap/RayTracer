@@ -366,6 +366,7 @@ __device__ float3 trace_ray(Ray ray, float* spheres, int num_spheres, float* cyl
         Ray reflect_ray = {hit_point, reflect_dir};
         float3 reflection = trace_ray(reflect_ray, spheres, num_spheres, cylinders, num_cylinders, planes, num_planes, rectangles, num_rectangles, cubes, num_cubes, depth + 1);
         color = vector_add(vector_multiply(color, 1 - material.reflection), vector_multiply(reflection, material.reflection));
+    }
 
     return color;
 }
@@ -397,7 +398,7 @@ void ray_trace_kernel(float* output, int width, int height, int samples,
         ));
 
         Ray ray = {make_float3(0, 0, 0), direction};
-        color = vector_add(color, trace_ray(ray, spheres, num_spheres, cylinders, num_cylinders, planes, num_planes, rectangles, num_rectangles, 0));
+        color = vector_add(color, trace_ray(ray, spheres, num_spheres, cylinders, num_cylinders, planes, num_planes, rectangles, num_rectangles, cubes, num_cubes, 0));
     }
     color = vector_multiply(color, 1.0f / float(samples));
 

@@ -533,7 +533,7 @@ scene = {
         Rectangle(Vector3(1, 0, -4), Vector3(0.5, 0, 0), Vector3(0, 1, 0), Material(Vector3(1, 0.5, 0), specular=0.3, reflection=0.2))
     ],
     'cubes': [
-        Cube(Vector3(-1, -1, -3), Vector3(0, 0, -2), Material(Vector3(0.5, 0.5, 1), specular=0.4, reflection=0.1)),
+        Cube(Vector3(-3, -3, -5), Vector3(-2, -2, -4), Material(Vector3(0.5, 0.5, 1), specular=0.4, reflection=0.1)),
         Cube(Vector3(1, 1, -5), Vector3(2, 2, -4), Material(Vector3(1, 0.5, 0.5), specular=0.4, reflection=0.1))
     ]
 }
