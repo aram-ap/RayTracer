@@ -160,25 +160,77 @@ def vector_normalize(v):
     return [x / length for x in v] if length != 0 else v
 
 def intersect_sphere(ray_origin, ray_direction, sphere):
-    oc = vector_subtract(ray_origin, sphere[:3])
-    a = vector_dot(ray_direction, ray_direction)
-    b = 2.0 * vector_dot(oc, ray_direction)
-    c = vector_dot(oc, oc) - sphere[3]**2
-    discriminant = b**2 - 4*a*c
+    center = sphere[:3]
+    radius = sphere[3]
+    oc = ray_origin - center
+    a = np.dot(ray_direction, ray_direction)
+    b = 2.0 * np.dot(oc, ray_direction)
+    c = np.dot(oc, oc) - radius * radius
+    discriminant = b * b - 4 * a * c
     if discriminant < 0:
-        return None
+        return np.inf
     t = (-b - np.sqrt(discriminant)) / (2.0 * a)
-    if t < 0:
-        return None
-    return t
+    return t if t > 0 else np.inf
+
+def intersect_cylinder(ray_origin, ray_direction, cylinder):
+    center = cylinder[:3]
+    radius = cylinder[3]
+    height = cylinder[4]
+    oc = ray_origin - center
+    a = ray_direction[0]**2 + ray_direction[2]**2
+    b = 2 * (oc[0] * ray_direction[0] + oc[2] * ray_direction[2])
+    c = oc[0]**2 + oc[2]**2 - radius**2
+    discriminant = b * b - 4 * a * c
+    if discriminant < 0:
+        return np.inf
+    t = (-b - np.sqrt(discriminant)) / (2.0 * a)
+    y = ray_origin[1] + t * ray_direction[1]
+    if y < center[1] or y > center[1] + height:
+        return np.inf
+    return t if t > 0 else np.inf
 
 def intersect_plane(ray_origin, ray_direction, plane):
     normal = plane[3:6]
-    denom = vector_dot(normal, ray_direction)
-    if abs(denom) < 1e-6:
-        return None
-    t = vector_dot(vector_subtract(plane[:3], ray_origin), normal) / denom
-    return t if t >= 0 else None
+    point = plane[:3]
+    denom = np.dot(normal, ray_direction)
+    if abs(denom) > 1e-6:
+        t = np.dot(point - ray_origin, normal) / denom
+        return t if t > 0 else np.inf
+    return np.inf
+
+def intersect_rectangle(ray_origin, ray_direction, rectangle):
+    corner = rectangle[:3]
+    u, v = rectangle[3:6], rectangle[6:9]
+    normal = normalize(np.cross(u, v))
+    t = np.dot(corner - ray_origin, normal) / np.dot(ray_direction, normal)
+    if t < 0:
+        return np.inf
+    p = ray_origin + t * ray_direction
+    pu = p - corner
+    if 0 <= np.dot(pu, u) <= np.dot(u, u) and 0 <= np.dot(pu, v) <= np.dot(v, v):
+        return t
+    return np.inf
+
+def intersect_cube(ray_origin, ray_direction, cube):
+    min_point, max_point = cube[:3], cube[3:6]
+    t_min = (min_point - ray_origin) / ray_direction
+    t_max = (max_point - ray_origin) / ray_direction
+    t1 = np.minimum(t_min, t_max)
+    t2 = np.maximum(t_min, t_max)
+    t_near = np.max(t1)
+    t_far = np.min(t2)
+    if t_near > t_far or t_far < 0:
+        return np.inf
+    return t_near if t_near > 0 else t_far
+
+def is_in_shadow(hit_point, light_pos, scene_data):
+    light_dir = normalize(light_pos - hit_point)
+    for obj_type in ['spheres', 'cylinders', 'planes', 'rectangles', 'cubes']:
+        for obj in scene_data[obj_type]:
+            t = globals()[f"intersect_{obj_type[:-1]}"](hit_point, light_dir, obj)
+            if 0 < t < np.linalg.norm(light_pos - hit_point):
+                return True
+    return False
 
 def trace_ray(ray_origin, ray_direction, spheres, planes, depth=0):
     if depth > 5:
@@ -237,71 +289,135 @@ def render_pixel(x, y, width, height, spheres, planes, samples=1):
     return vector_multiply(color, 1 / samples)
 
 def render_chunk(args):
-    x_start, x_end, y_start, y_end, width, height, spheres, planes, samples = args
+    x_start, x_end, y_start, y_end, width, height, scene_data, samples = args
     chunk = np.zeros((y_end - y_start, x_end - x_start, 3), dtype=np.float32)
     for y in range(y_start, y_end):
         for x in range(x_start, x_end):
-            color = render_pixel(x, y, width, height, spheres, planes, samples)
-            chunk[y - y_start, x - x_start] = color
+            color = np.zeros(3)
+            for _ in range(samples):
+                u = (x + np.random.random()) / width
+                v = (y + np.random.random()) / height
+                ray_direction = normalize(np.array([(u - 0.5) * width / height, (0.5 - v), -1]))
+                ray_origin = np.array([0, 0, 0])
+                color += cpu_ray_color(ray_origin, ray_direction, scene_data)
+            chunk[y - y_start, x - x_start] = color / samples
     return chunk
 
 def cpu_ray_color(ray_origin, ray_direction, scene_data, depth=0):
-    if depth > 3:  # Limit recursion depth
+    if depth > 5:
         return np.zeros(3)
 
     closest_t = np.inf
     closest_obj = None
+    obj_type = None
 
-    # Check sphere intersections
-    for sphere in scene_data['spheres']:
-        t = intersect_sphere(ray_origin, ray_direction, sphere)
-        if t < closest_t:
-            closest_t = t
-            closest_obj = (sphere, 'sphere')
-
-    # Check plane intersections
-    for plane in scene_data['planes']:
-        t = intersect_plane(ray_origin, ray_direction, plane)
-        if t < closest_t:
-            closest_t = t
-            closest_obj = (plane, 'plane')
+    for obj_name in ['spheres', 'cylinders', 'planes', 'rectangles', 'cubes']:
+        for obj in scene_data[obj_name]:
+            t = globals()[f"intersect_{obj_name[:-1]}"](ray_origin, ray_direction, obj)
+            if t < closest_t:
+                closest_t = t
+                closest_obj = obj
+                obj_type = obj_name[:-1]
 
     if closest_obj is None:
-        # Sky color
-        t = 0.5 * (ray_direction[1] + 1.0)
-        return (1.0-t)*np.array([1.0, 1.0, 1.0]) + t*np.array([0.5, 0.7, 1.0])
+        return np.array([0.5, 0.7, 1.0]) * (0.5 * ray_direction[1] + 0.5)
 
-    obj, obj_type = closest_obj
     hit_point = ray_origin + closest_t * ray_direction
 
     if obj_type == 'sphere':
-        normal = normalize(hit_point - obj[:3])
-        color = obj[4:7]
-        specular = obj[7]
-        reflection = obj[8]
-    else:  # plane
-        normal = obj[3:6]
-        color = obj[6:9]
-        specular = obj[9]
-        reflection = obj[10]
+        normal = normalize(hit_point - closest_obj[:3])
+        color = closest_obj[4:7]
+        specular = closest_obj[7]
+        reflection = closest_obj[8]
+        refraction = closest_obj[9]
+        refractive_index = closest_obj[10]
+    elif obj_type == 'cylinder':
+        center = closest_obj[:3]
+        normal = normalize(np.array([hit_point[0] - center[0], 0, hit_point[2] - center[2]]))
+        color = closest_obj[5:8]
+        specular = closest_obj[8]
+        reflection = closest_obj[9]
+        refraction = closest_obj[10]
+        refractive_index = closest_obj[11]
+    elif obj_type == 'plane':
+        normal = closest_obj[3:6]
+        if np.dot(normal, ray_direction) > 0:
+            normal = -normal
+        x, z = hit_point[0], hit_point[2]
+        color = closest_obj[6:9] if (int(x * 2) % 2 == int(z * 2) % 2) else closest_obj[6:9] * 0.8
+        specular = closest_obj[9]
+        reflection = closest_obj[10]
+        refraction = 0
+        refractive_index = 1
+    elif obj_type == 'rectangle':
+        u, v = closest_obj[3:6], closest_obj[6:9]
+        normal = normalize(np.cross(u, v))
+        if np.dot(normal, ray_direction) > 0:
+            normal = -normal
+        color = closest_obj[9:12]
+        specular = closest_obj[12]
+        reflection = closest_obj[13]
+        refraction = 0
+        refractive_index = 1
+    else:  # cube
+        min_point, max_point = closest_obj[:3], closest_obj[3:6]
+        normal = np.zeros(3)
+        for i in range(3):
+            if abs(hit_point[i] - min_point[i]) < 1e-6:
+                normal[i] = -1
+            elif abs(hit_point[i] - max_point[i]) < 1e-6:
+                normal[i] = 1
+        normal = normalize(normal)
+        color = closest_obj[6:9]
+        specular = closest_obj[9]
+        reflection = closest_obj[10]
+        refraction = closest_obj[11]
+        refractive_index = closest_obj[12]
 
-    # Diffuse lighting
-    light_dir = normalize(np.array([5, 5, 5]) - hit_point)
-    diffuse = np.maximum(np.dot(normal, light_dir), 0)
+    light_pos = np.array([5, 5, 5])
+    light_dir = normalize(light_pos - hit_point)
+    view_dir = normalize(ray_origin - hit_point)
 
-    # Specular lighting
+    # Ambient
+    ambient = color * 0.1
+
+    # Diffuse
+    diffuse = np.maximum(np.dot(normal, light_dir), 0) * color
+
+    # Specular
     reflect_dir = reflect(-light_dir, normal)
-    spec = np.power(np.maximum(np.dot(-ray_direction, reflect_dir), 0), 50)
-    specular_intensity = specular * spec
+    specular_intensity = np.power(np.maximum(np.dot(view_dir, reflect_dir), 0), 32) * specular
+
+    # Shadow
+    shadow_factor = 0.5 if is_in_shadow(hit_point + normal * 0.001, light_pos, scene_data) else 1.0
+
+    color = ambient + (diffuse + specular_intensity) * shadow_factor
 
     # Reflection
-    reflect_color = np.zeros(3)
-    if reflection > 0 and depth < 3:
+    if reflection > 0 and depth < 5:
         reflect_dir = reflect(ray_direction, normal)
-        reflect_origin = hit_point + normal * 0.001  # Offset to avoid self-intersection
+        reflect_origin = hit_point + normal * 0.001
         reflect_color = cpu_ray_color(reflect_origin, reflect_dir, scene_data, depth + 1)
+        color = color * (1 - reflection) + reflect_color * reflection
 
-    return color * (diffuse + 0.1) + specular_intensity + reflection * reflect_color
+    # Refraction (simplified, only for spheres and cylinders)
+    if refraction > 0 and depth < 5:
+        refract_dir = refract(ray_direction, normal, 1.0, refractive_index)
+        if refract_dir is not None:
+            refract_origin = hit_point - normal * 0.001
+            refract_color = cpu_ray_color(refract_origin, refract_dir, scene_data, depth + 1)
+            color = color * (1 - refraction) + refract_color * refraction
+
+    return np.clip(color, 0, 1)
+
+def refract(incident, normal, n1, n2):
+    cos_i = -np.dot(normal, incident)
+    eta = n1 / n2
+    k = 1 - eta * eta * (1 - cos_i * cos_i)
+    if k < 0:
+        return None
+    return eta * incident + (eta * cos_i - np.sqrt(k)) * normal
+
 #
 # def render_chunk(chunk_data):
 #     y_start, y_end, width, height, samples, scene_data = chunk_data
@@ -348,7 +464,7 @@ def render_cpu(width, height, samples, data):
     for i in range(num_threads):
         y_start = i * chunk_height
         y_end = y_start + chunk_height if i < num_threads - 1 else height
-        chunks.append((0, width, y_start, y_end, width, height, data['spheres'], data['planes'], samples))
+        chunks.append((0, width, y_start, y_end, width, height, data, samples))
 
     results = list(tqdm(pool.imap(render_chunk, chunks), total=len(chunks), desc="Rendering"))
 
@@ -369,7 +485,8 @@ def render_gpu(width, height, samples, data):
               data['spheres'], data['spheres'].shape[0],
               data['cylinders'], data['cylinders'].shape[0],
               data['planes'], data['planes'].shape[0],
-              data['rectangles'], data['rectangles'].shape[0])
+              data['rectangles'], data['rectangles'].shape[0],
+              data['cubes'], data['cubes'].shape[0])
     )
 
     cp.cuda.stream.get_current_stream().synchronize()
@@ -444,6 +561,7 @@ def main():
 
         # Create the RawKernel using the code from the file
         ray_trace_kernel = cp.RawKernel(cuda_code, 'ray_trace_kernel')
+
 
     # print("Data shapes:")
     # for key, value in data.items():

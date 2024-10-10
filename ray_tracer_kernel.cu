@@ -153,9 +153,36 @@ __device__ bool intersect_rectangle(Ray ray, float* rectangle, float* t) {
     return true;
 }
 
-__device__ float3 vector_cross(float3 a, float3 b) {
-    return make_float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+__device__ bool intersect_cube(Ray ray, float* cube, float* t) {
+    float3 min_point = make_float3(cube[0], cube[1], cube[2]);
+    float3 max_point = make_float3(cube[3], cube[4], cube[5]);
+
+    float3 inv_dir = make_float3(1.0f / ray.direction.x, 1.0f / ray.direction.y, 1.0f / ray.direction.z);
+    float3 t_min = make_float3((min_point.x - ray.origin.x) * inv_dir.x,
+                               (min_point.y - ray.origin.y) * inv_dir.y,
+                               (min_point.z - ray.origin.z) * inv_dir.z);
+    float3 t_max = make_float3((max_point.x - ray.origin.x) * inv_dir.x,
+                               (max_point.y - ray.origin.y) * inv_dir.y,
+                               (max_point.z - ray.origin.z) * inv_dir.z);
+
+    float3 t_enter = make_float3(fminf(t_min.x, t_max.x),
+                                 fminf(t_min.y, t_max.y),
+                                 fminf(t_min.z, t_max.z));
+    float3 t_exit = make_float3(fmaxf(t_min.x, t_max.x),
+                                fmaxf(t_min.y, t_max.y),
+                                fmaxf(t_min.z, t_max.z));
+
+    float t_enter_max = fmaxf(fmaxf(t_enter.x, t_enter.y), t_enter.z);
+    float t_exit_min = fminf(fminf(t_exit.x, t_exit.y), t_exit.z);
+
+    if (t_enter_max > t_exit_min || t_exit_min < 0) {
+        return false;
+    }
+
+    *t = t_enter_max;
+    return true;
 }
+
 
 
 __device__ bool is_in_shadow(float3 hit_point, float3 light_dir, float* spheres, int num_spheres, float* planes, int num_planes) {
@@ -175,13 +202,12 @@ __device__ bool is_in_shadow(float3 hit_point, float3 light_dir, float* spheres,
 }
 
 
-__device__ float3 trace_ray(Ray ray, float* spheres, int num_spheres, float* cylinders, int num_cylinders, float* planes, int num_planes, float* rectangles, int num_rectangles, int depth) {
-
+__device__ float3 trace_ray(Ray ray, float* spheres, int num_spheres, float* cylinders, int num_cylinders, float* planes, int num_planes, float* rectangles, int num_rectangles, float* cubes, int num_cubes, int depth) {
     if (depth > 5) return make_float3(0, 0, 0);
 
     float closest_t = 1e30f;
     int closest_obj_index = -1;
-    int obj_type = -1; // 0: sphere, 1: cylinder, 2: plane, 3: rectangle
+    int obj_type = -1; // 0: sphere, 1: cylinder, 2: plane, 3: rectangle, 4: cube
 
     // Check sphere intersections
     for (int i = 0; i < num_spheres; i++) {
@@ -220,6 +246,15 @@ __device__ float3 trace_ray(Ray ray, float* spheres, int num_spheres, float* cyl
             closest_t = t;
             closest_obj_index = i;
             obj_type = 3;
+        }
+    }
+    // Check cube intersections
+    for (int i = 0; i < num_cubes; i++) {
+        float t;
+        if (intersect_cube(ray, &cubes[i * 13], &t) && t < closest_t) {
+            closest_t = t;
+            closest_obj_index = i;
+            obj_type = 4;
         }
     }
 
@@ -285,6 +320,25 @@ __device__ float3 trace_ray(Ray ray, float* spheres, int num_spheres, float* cyl
                 material.refractive_index = 1;
             }
             break;
+        case 4: // Cube
+            {
+                float* cube = &cubes[closest_obj_index * 13];
+                float3 min_point = make_float3(cube[0], cube[1], cube[2]);
+                float3 max_point = make_float3(cube[3], cube[4], cube[5]);
+                normal = make_float3(
+                        (hit_point.x - min_point.x < 0.001f) ? -1.0f : ((hit_point.x - max_point.x > -0.001f) ? 1.0f : 0.0f),
+                        (hit_point.y - min_point.y < 0.001f) ? -1.0f : ((hit_point.y - max_point.y > -0.001f) ? 1.0f : 0.0f),
+                        (hit_point.z - min_point.z < 0.001f) ? -1.0f : ((hit_point.z - max_point.z > -0.001f) ? 1.0f : 0.0f)
+                        );
+                normal = vector_normalize(normal);
+                material.color = make_float3(cube[6], cube[7], cube[8]);
+                material.specular = cube[9];
+                material.reflection = cube[10];
+                material.refraction = cube[11];
+                material.refractive_index = cube[12];
+            }
+            break;
+
     }
 
 
@@ -310,9 +364,8 @@ __device__ float3 trace_ray(Ray ray, float* spheres, int num_spheres, float* cyl
     if (material.reflection > 0 && depth < 5) {
         float3 reflect_dir = vector_subtract(ray.direction, vector_multiply(normal, 2 * vector_dot(ray.direction, normal)));
         Ray reflect_ray = {hit_point, reflect_dir};
-        float3 reflection = trace_ray(reflect_ray, spheres, num_spheres, cylinders, num_cylinders, planes, num_planes, rectangles, num_rectangles, depth + 1);
+        float3 reflection = trace_ray(reflect_ray, spheres, num_spheres, cylinders, num_cylinders, planes, num_planes, rectangles, num_rectangles, cubes, num_cubes, depth + 1);
         color = vector_add(vector_multiply(color, 1 - material.reflection), vector_multiply(reflection, material.reflection));
-    }
 
     return color;
 }
@@ -322,7 +375,8 @@ void ray_trace_kernel(float* output, int width, int height, int samples,
                       float* spheres, int num_spheres,
                       float* cylinders, int num_cylinders,
                       float* planes, int num_planes,
-                      float* rectangles, int num_rectangles) {
+                      float* rectangles, int num_rectangles,
+                      float* cubes, int num_cubes) {
 
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
