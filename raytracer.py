@@ -241,11 +241,6 @@ def render_gpu(width, height, samples, data):
     blockspergrid_y = (height + threadsperblock[1] - 1) // threadsperblock[1]
     blockspergrid = (blockspergrid_x, blockspergrid_y)
 
-    # Create a CUDA event to measure render time
-    start_event = cp.cuda.Event()
-    end_event = cp.cuda.Event()
-    start_event.record()
-
     ray_trace_kernel(
         grid=blockspergrid,
         block=threadsperblock,
@@ -257,20 +252,12 @@ def render_gpu(width, height, samples, data):
               data['cubes'], data['cubes'].shape[0])
     )
 
-    cp.cuda.stream.get_current_stream().synchronize()
-
-    end_event.record()
-    end_event.synchronize()
-
-    # Check for errors
-    error_flag = cp.zeros(1, dtype=cp.int32)
-    cp.cuda.runtime.memcpyDtoH(error_flag.data, cp.cuda.runtime.memGetInfo()[0], error_flag.nbytes)
-    if error_flag[0] != 0:
-        print("CUDA kernel encountered an error")
+    # Check for CUDA errors
+    cp.cuda.runtime.deviceSynchronize()
+    error = cp.cuda.runtime.getLastError()
+    if error != 0:
+        print(f"CUDA error: {cp.cuda.runtime.getErrorString(error)}")
         return None
-
-    render_time = cp.cuda.get_elapsed_time(start_event, end_event) / 1000  # Convert to seconds
-    print(f"GPU rendering completed in {render_time:.2f} seconds")
 
     return output
 
