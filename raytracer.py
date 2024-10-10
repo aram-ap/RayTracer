@@ -1,6 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import time
+import os
+from tqdm import tqdm
 
 # Try to import CuPy, but fall back to NumPy if it's not available
 try:
@@ -105,11 +107,45 @@ def initialize_data(scene):
 
     return data
 
+def cpu_ray_color(ray, scene_data):
+    # This is a very basic implementation. You should expand this for better results.
+    for sphere in scene_data['spheres']:
+        center = sphere[:3]
+        radius = sphere[3]
+        color = sphere[4:7]
+
+        oc = ray[0] - center
+        a = np.dot(ray[1], ray[1])
+        b = 2.0 * np.dot(oc, ray[1])
+        c = np.dot(oc, oc) - radius*radius
+        discriminant = b*b - 4*a*c
+
+        if discriminant > 0:
+            return color
+
+    # If no intersection, return background color
+    t = 0.5 * (ray[1][1] + 1.0)
+    return (1.0-t)*np.array([1.0, 1.0, 1.0]) + t*np.array([0.5, 0.7, 1.0])
+
+
 def render_cpu(width, height, samples, data):
-    # Implement CPU rendering here
-    # This is a placeholder and should be replaced with actual CPU ray tracing code
     output = np.zeros((height, width, 3), dtype=np.float32)
-    # ... (implement CPU ray tracing)
+
+    for j in tqdm(range(height), desc="Rendering", unit="lines"):
+        for i in range(width):
+            color = np.zeros(3)
+            for _ in range(samples):
+                u = (i + np.random.random()) / width
+                v = (j + np.random.random()) / height
+                ray_origin = np.array([0, 0, 0])
+                ray_direction = np.array([(2*u - 1)*width/height, -(2*v - 1), -1])
+                ray_direction /= np.linalg.norm(ray_direction)
+
+                color += cpu_ray_color([ray_origin, ray_direction], data)
+
+            color /= samples
+            output[height-j-1, i] = np.clip(color, 0, 1)
+
     return output
 
 def render_gpu(width, height, samples, data):
@@ -119,6 +155,11 @@ def render_gpu(width, height, samples, data):
     blockspergrid_x = (width + threadsperblock[0] - 1) // threadsperblock[0]
     blockspergrid_y = (height + threadsperblock[1] - 1) // threadsperblock[1]
     blockspergrid = (blockspergrid_x, blockspergrid_y)
+
+    # Create a CUDA event to measure render time
+    start_event = cp.cuda.Event()
+    end_event = cp.cuda.Event()
+    start_event.record()
 
     ray_trace_kernel(
         grid=blockspergrid,
@@ -131,9 +172,14 @@ def render_gpu(width, height, samples, data):
               data['cubes'], data['cubes'].shape[0])
     )
 
-    cp.cuda.stream.get_current_stream().synchronize()
+    end_event.record()
+    end_event.synchronize()
+
     if cp.cuda.runtime.getLastError() != 0:
         print("CUDA error: {}".format(cp.cuda.runtime.getLastError()))
+
+    render_time = cp.cuda.get_elapsed_time(start_event, end_event) / 1000  # Convert to seconds
+    print(f"GPU rendering completed in {render_time:.2f} seconds")
 
     return output
 
@@ -174,13 +220,22 @@ def main():
 
     data = initialize_data(scene)
 
+    if use_gpu:
+        # Load and compile the CUDA kernel
+        kernel_path = os.path.join(os.path.dirname(__file__), 'ray_tracer_kernel.cu')
+        with open(kernel_path, 'r') as f:
+            kernel_code = f.read()
+
+        global ray_trace_kernel
+        ray_trace_kernel = cp.RawKernel(kernel_code, 'ray_trace_kernel')
+
     print(f"Rendering at {width}x{height} with {samples} samples per pixel...")
     start_time = time.time()
 
     image = render(width, height, samples, data)
 
     end_time = time.time()
-    print(f"Rendering complete. Time taken: {end_time - start_time:.2f} seconds")
+    print(f"Total time (including setup): {end_time - start_time:.2f} seconds")
 
     if use_gpu:
         image = cp.asnumpy(image)
@@ -190,6 +245,10 @@ def main():
     plt.axis('off')
     plt.title("Ray Traced Scene")
     plt.show()
+
+    # Save the image
+    plt.imsave("ray_traced_scene.png", image)
+    print("Image saved as ray_traced_scene.png")
 
 if __name__ == "__main__":
     main()
