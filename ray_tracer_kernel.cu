@@ -1,4 +1,15 @@
 // ray_tracer_kernel.cu
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline __device__ void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+   if (code != cudaSuccess)
+   {
+      printf("GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+      if (abort) assert(0);
+   }
+}
+
+
 #include <curand_kernel.h>
 #include <math_constants.h>
 // Vector operations
@@ -301,16 +312,17 @@ __device__ float3 trace_ray(Ray ray, Sphere* spheres, int num_spheres,
     return color;
 }
 
-extern "C" __global__
-void ray_trace_kernel(float* output, int width, int height, int samples,
-                      float* spheres_data, int num_spheres,
-                      float* cylinders_data, int num_cylinders,
-                      float* planes_data, int num_planes,
-                      float* rectangles_data, int num_rectangles,
-                      float* cubes_data, int num_cubes) {
+extern "C"
+__global__ void ray_trace_kernel(float* output, int width, int height, int samples,
+                                 float* spheres_data, int num_spheres,
+                                 float* cylinders_data, int num_cylinders,
+                                 float* planes_data, int num_planes,
+                                 float* rectangles_data, int num_rectangles,
+                                 float* cubes_data, int num_cubes) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) return;
+
 
     curandState state;
     curand_init(y * width + x, 0, 0, &state);
@@ -384,12 +396,16 @@ void ray_trace_kernel(float* output, int width, int height, int samples,
 
         Ray ray = {camera_pos, direction};
         color = vector_add(color, trace_ray(ray, spheres, num_spheres, cylinders, num_cylinders, planes, num_planes, rectangles, num_rectangles, cubes, num_cubes, light_pos, 0));
+        gpuErrchk(cudaPeekAtLastError());
     }
+
     color = vector_multiply(color, 1.0f / float(samples));
 
     int idx = (y * width + x) * 3;
+    gpuErrchk(cudaPeekAtLastError());
     output[idx] = fminf(color.x, 1.0f);
     output[idx + 1] = fminf(color.y, 1.0f);
     output[idx + 2] = fminf(color.z, 1.0f);
+    gpuErrchk(cudaPeekAtLastError());
 }
 
