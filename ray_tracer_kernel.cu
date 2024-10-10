@@ -205,7 +205,7 @@ __device__ Vector3 trace_ray(Ray ray, Sphere* spheres, int num_spheres,
                              Vector3 light_pos, int depth) {
     if (depth > 5) return {0.0f, 0.0f, 0.0f};
 
-    float closest_t = INFINITY;
+    float closest_t = 1e30f;
     Material* closest_material = NULL;
     Vector3 normal;
     Vector3 hit_point;
