@@ -367,7 +367,9 @@ def render_gpu(width, height, samples, data):
         block=threadsperblock,
         args=(output, width, height, samples,
               data['spheres'], data['spheres'].shape[0],
-              data['planes'], data['planes'].shape[0])
+              data['cylinders'], data['cylinders'].shape[0],
+              data['planes'], data['planes'].shape[0],
+              data['rectangles'], data['rectangles'].shape[0])
     )
 
     cp.cuda.stream.get_current_stream().synchronize()
@@ -401,20 +403,17 @@ def render(width, height, samples, data):
 scene = {
     'spheres': [
         Sphere(Vector3(0, 1, -5), 1, Material(Vector3(1, 0, 0), specular=0.6, reflection=0.2)),
-        Sphere(Vector3(-2.5, 0.5, -7), 1.5, Material(Vector3(0, 1, 0), specular=0.4, reflection=0.8)),
-        Sphere(Vector3(2.5, 0.5, -6), 0.75, Material(Vector3(0, 0, 1), specular=0.5, reflection=0.1))
+        Sphere(Vector3(-2.5, 1, -7), 1.5, Material(Vector3(0, 1, 0), specular=0.4, reflection=0.8)),
+        Sphere(Vector3(2.5, 1, -6), 0.75, Material(Vector3(0, 0, 1), specular=0.5, reflection=0.1))
     ],
     'cylinders': [
-        Cylinder(Vector3(-1, 0, -4), 0.5, 1, Material(Vector3(1, 1, 0), specular=0.7, reflection=0.1)),
-        Cylinder(Vector3(1, 0, -3), 0.5, 1, Material(Vector3(0, 1, 1), specular=0.7, reflection=0.1))
+        Cylinder(Vector3(-1, 0, -4), 0.3, 1, Material(Vector3(1, 0, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5))  # Glass cylinder tinted magenta
     ],
     'planes': [
-        Plane(Vector3(0, -1, 0), Vector3(0, 1, 0), Material(Vector3(0.5, 0.5, 0.5), specular=0.1, reflection=0.1)),
-        Plane(Vector3(0, 0, -10), Vector3(0, 0, 1), Material(Vector3(0.7, 0.7, 0.7), specular=0.1, reflection=0.1))
+        Plane(Vector3(0, 0, -10), Vector3(0, 0, 1), Material(Vector3(0.5, 0.5, 0.5), specular=0.1, reflection=0.1))  # Back wall
     ],
     'rectangles': [
-        Rectangle(Vector3(-2, 2, -6), Vector3(2, 0, 0), Vector3(0, 2, 0), Material(Vector3(1, 0.5, 0), specular=0.3, reflection=0.2)),
-        Rectangle(Vector3(2, -1, -4), Vector3(0, 2, 0), Vector3(2, 0, 0), Material(Vector3(0.5, 0, 1), specular=0.3, reflection=0.2))
+        Rectangle(Vector3(1, 0, -4), Vector3(0.5, 0, 0), Vector3(0, 1, 0), Material(Vector3(1, 0.5, 0), specular=0.3, reflection=0.2))
     ],
     'cubes': [
         Cube(Vector3(-1, -1, -3), Vector3(0, 0, -2), Material(Vector3(0.5, 0.5, 1), specular=0.4, reflection=0.1)),

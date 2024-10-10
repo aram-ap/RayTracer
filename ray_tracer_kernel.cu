@@ -79,6 +79,81 @@ __device__ bool intersect_plane(Ray ray, float* plane, float* t) {
     return false;
 }
 
+__device__ bool intersect_cylinder(Ray ray, float* cylinder, float* t) {
+    float3 center = make_float3(cylinder[0], cylinder[1], cylinder[2]);
+    float radius = cylinder[3];
+    float height = cylinder[4];
+
+    float3 ro = vector_subtract(ray.origin, center);
+    float3 rd = ray.direction;
+
+    float a = rd.x * rd.x + rd.z * rd.z;
+    float b = 2 * (ro.x * rd.x + ro.z * rd.z);
+    float c = ro.x * ro.x + ro.z * ro.z - radius * radius;
+
+    float discriminant = b * b - 4 * a * c;
+    if (discriminant < 0) return false;
+
+    float t0 = (-b - sqrtf(discriminant)) / (2 * a);
+    float t1 = (-b + sqrtf(discriminant)) / (2 * a);
+
+    if (t0 > t1) {
+        float temp = t0;
+        t0 = t1;
+        t1 = temp;
+    }
+
+    float y0 = ro.y + t0 * rd.y;
+    float y1 = ro.y + t1 * rd.y;
+
+    if (y0 < 0) {
+        if (y1 < 0) return false;
+        float th = t0 + (t1 - t0) * (-y0) / (y1 - y0);
+        if (th > 0 && th < *t) {
+            *t = th;
+            return true;
+        }
+    } else if (y0 >= 0 && y0 <= height) {
+        if (t0 > 0 && t0 < *t) {
+            *t = t0;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+__device__ bool intersect_rectangle(Ray ray, float* rectangle, float* t) {
+    float3 corner = make_float3(rectangle[0], rectangle[1], rectangle[2]);
+    float3 u = make_float3(rectangle[3], rectangle[4], rectangle[5]);
+    float3 v = make_float3(rectangle[6], rectangle[7], rectangle[8]);
+
+    float3 normal = vector_normalize(vector_cross(u, v));
+    float d = -vector_dot(normal, corner);
+
+    float denom = vector_dot(normal, ray.direction);
+    if (fabsf(denom) < 1e-6) return false;
+
+    *t = -(vector_dot(normal, ray.origin) + d) / denom;
+    if (*t < 0) return false;
+
+    float3 p = vector_add(ray.origin, vector_multiply(ray.direction, *t));
+    float3 vi = vector_subtract(p, corner);
+
+    float a1 = vector_dot(vi, u);
+    if (a1 < 0 || a1 > vector_dot(u, u)) return false;
+
+    float a2 = vector_dot(vi, v);
+    if (a2 < 0 || a2 > vector_dot(v, v)) return false;
+
+    return true;
+}
+
+__device__ float3 vector_cross(float3 a, float3 b) {
+    return make_float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+}
+
+
 __device__ bool is_in_shadow(float3 hit_point, float3 light_dir, float* spheres, int num_spheres, float* planes, int num_planes) {
     Ray shadow_ray = {hit_point, light_dir};
     float t;
@@ -96,12 +171,12 @@ __device__ bool is_in_shadow(float3 hit_point, float3 light_dir, float* spheres,
 }
 
 
-__device__ float3 trace_ray(Ray ray, float* spheres, int num_spheres, float* planes, int num_planes, int depth) {
+__device__ float3 trace_ray(Ray ray, float* spheres, int num_spheres, float* cylinders, int num_cylinders, float* planes, int num_planes, float* rectangles, int num_rectangles, int depth) {
     if (depth > 5) return make_float3(0, 0, 0);
 
     float closest_t = 1e30f;
     int closest_obj_index = -1;
-    bool is_sphere = true;
+    int obj_type = -1; // 0: sphere, 1: cylinder, 2: plane, 3: rectangle
 
     // Check sphere intersections
     for (int i = 0; i < num_spheres; i++) {
@@ -109,7 +184,17 @@ __device__ float3 trace_ray(Ray ray, float* spheres, int num_spheres, float* pla
         if (intersect_sphere(ray, &spheres[i * 11], &t) && t < closest_t) {
             closest_t = t;
             closest_obj_index = i;
-            is_sphere = true;
+            obj_type = 0;
+        }
+    }
+
+    // Check cylinder intersections
+    for (int i = 0; i < num_cylinders; i++) {
+        float t;
+        if (intersect_cylinder(ray, &cylinders[i * 12], &t) && t < closest_t) {
+            closest_t = t;
+            closest_obj_index = i;
+            obj_type = 1;
         }
     }
 
@@ -119,7 +204,17 @@ __device__ float3 trace_ray(Ray ray, float* spheres, int num_spheres, float* pla
         if (intersect_plane(ray, &planes[i * 11], &t) && t < closest_t) {
             closest_t = t;
             closest_obj_index = i;
-            is_sphere = false;
+            obj_type = 2;
+        }
+    }
+
+    // Check rectangle intersections
+    for (int i = 0; i < num_rectangles; i++) {
+        float t;
+        if (intersect_rectangle(ray, &rectangles[i * 14], &t) && t < closest_t) {
+            closest_t = t;
+            closest_obj_index = i;
+            obj_type = 3;
         }
     }
 
@@ -133,26 +228,58 @@ __device__ float3 trace_ray(Ray ray, float* spheres, int num_spheres, float* pla
     float3 normal;
     Material material;
 
-    if (is_sphere) {
-        float* sphere = &spheres[closest_obj_index * 11];
-        normal = vector_normalize(vector_subtract(hit_point, make_float3(sphere[0], sphere[1], sphere[2])));
-        material.color = make_float3(sphere[4], sphere[5], sphere[6]);
-        material.specular = sphere[7];
-        material.reflection = sphere[8];
-        material.refraction = sphere[9];
-        material.refractive_index = sphere[10];
-    } else {
-        float* plane = &planes[closest_obj_index * 11];
-        normal = make_float3(plane[3], plane[4], plane[5]);
-        if (is_checkerboard(hit_point)) {
-            material.color = make_float3(0.1f, 0.1f, 0.1f);  // Dark color
-        } else {
-            material.color = make_float3(0.9f, 0.9f, 0.9f);  // Light color
-        }
-        material.specular = plane[9];
-        material.reflection = plane[10];
-        material.refraction = 0;
-        material.refractive_index = 1;
+    switch (obj_type) {
+        case 0: // Sphere
+            {
+                float* sphere = &spheres[closest_obj_index * 11];
+                normal = vector_normalize(vector_subtract(hit_point, make_float3(sphere[0], sphere[1], sphere[2])));
+                material.color = make_float3(sphere[4], sphere[5], sphere[6]);
+                material.specular = sphere[7];
+                material.reflection = sphere[8];
+                material.refraction = sphere[9];
+                material.refractive_index = sphere[10];
+            }
+            break;
+        case 1: // Cylinder
+            {
+                float* cylinder = &cylinders[closest_obj_index * 12];
+                float3 center = make_float3(cylinder[0], cylinder[1], cylinder[2]);
+                normal = vector_normalize(make_float3(hit_point.x - center.x, 0, hit_point.z - center.z));
+                material.color = make_float3(cylinder[5], cylinder[6], cylinder[7]);
+                material.specular = cylinder[8];
+                material.reflection = cylinder[9];
+                material.refraction = cylinder[10];
+                material.refractive_index = cylinder[11];
+            }
+            break;
+        case 2: // Plane
+            {
+                float* plane = &planes[closest_obj_index * 11];
+                normal = make_float3(plane[3], plane[4], plane[5]);
+                if (is_checkerboard(hit_point)) {
+                    material.color = make_float3(0.1f, 0.1f, 0.1f);  // Dark color
+                } else {
+                    material.color = make_float3(0.9f, 0.9f, 0.9f);  // Light color
+                }
+                material.specular = plane[9];
+                material.reflection = plane[10];
+                material.refraction = 0;
+                material.refractive_index = 1;
+            }
+            break;
+        case 3: // Rectangle
+            {
+                float* rectangle = &rectangles[closest_obj_index * 14];
+                float3 u = make_float3(rectangle[3], rectangle[4], rectangle[5]);
+                float3 v = make_float3(rectangle[6], rectangle[7], rectangle[8]);
+                normal = vector_normalize(vector_cross(u, v));
+                material.color = make_float3(rectangle[9], rectangle[10], rectangle[11]);
+                material.specular = rectangle[12];
+                material.reflection = rectangle[13];
+                material.refraction = 0;
+                material.refractive_index = 1;
+            }
+            break;
     }
 
 
@@ -188,8 +315,9 @@ __device__ float3 trace_ray(Ray ray, float* spheres, int num_spheres, float* pla
 extern "C" __global__
 void ray_trace_kernel(float* output, int width, int height, int samples,
                       float* spheres, int num_spheres,
-                      float* planes, int num_planes) {
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
+                      float* cylinders, int num_cylinders,
+                      float* planes, int num_planes,
+                      float* rectangles, int num_rectangles) {    int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) return;
 
@@ -208,7 +336,7 @@ void ray_trace_kernel(float* output, int width, int height, int samples,
         ));
 
         Ray ray = {make_float3(0, 0, 0), direction};
-        color = vector_add(color, trace_ray(ray, spheres, num_spheres, planes, num_planes, 0));
+        color = vector_add(color, trace_ray(ray, spheres, num_spheres, cylinders, num_cylinders, planes, num_planes, rectangles, num_rectangles, 0));
     }
     color = vector_multiply(color, 1.0f / float(samples));
 
