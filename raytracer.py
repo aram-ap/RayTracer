@@ -1,49 +1,15 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import random
-import math
-import multiprocessing
-from OpenGL.GL import *
-from OpenGL.GLUT import *
-from OpenGL.GLU import *
-from PIL import Image
 import time
-from tqdm import tqdm
-import logging
-# At the beginning of your script, replace the CuPy import with:
+
+# Try to import CuPy, but fall back to NumPy if it's not available
 try:
     import cupy as cp
-    import os
-
-    # Get the directory of the current script
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-
-    # Construct the path to the CUDA kernel file
-    kernel_path = os.path.join(current_dir, 'ray_tracer_kernel.cu')
-
-    # Read the CUDA kernel code from the file
-    with open(kernel_path, 'r') as f:
-        cuda_code = f.read()
-
-    # Create the RawKernel using the code from the file
-    ray_trace_kernel = cp.RawKernel(cuda_code, 'ray_trace_kernel')
-    xp = cp
-    using_gpu = True
-    logging.info("Using GPU acceleration")
-
-except (NameError, ImportError, ModuleNotFoundError) as e:
-    xp = np
-    using_gpu = False
-    logging.info("GPU acceleration not available, using CPU")
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Use GPU if available, otherwise use CPU
-try:
-    xp = cp.get_array_module(cp.array([1]))
-    logging.info("Using GPU acceleration")
-except NameError:
-    xp = np
-    logging.info("GPU acceleration not available, using CPU")
+    use_gpu = True
+    print("GPU acceleration available. Using CuPy.")
+except ImportError:
+    use_gpu = False
+    print("GPU acceleration not available. Using NumPy for CPU rendering.")
 
 class Vector3:
     def __init__(self, x, y, z):
@@ -51,47 +17,13 @@ class Vector3:
         self.y = y
         self.z = z
 
-    def __add__(self, other):
-        return Vector3(self.x + other.x, self.y + other.y, self.z + other.z)
-
-    def __sub__(self, other):
-        return Vector3(self.x - other.x, self.y - other.y, self.z - other.z)
-
-    def __mul__(self, other):
-        if isinstance(other, Vector3):
-            return Vector3(self.x * other.x, self.y * other.y, self.z * other.z)
-        return Vector3(self.x * other, self.y * other, self.z * other)
-
-    def __rmul__(self, other):
-        return self.__mul__(other)
-
-    def dot(self, other):
-        return self.x * other.x + self.y * other.y + self.z * other.z
-
-    def cross(self, other):
-        return Vector3(
-            self.y * other.z - self.z * other.y,
-            self.z * other.x - self.x * other.z,
-            self.x * other.y - self.y * other.x
-        )
-
-    def normalize(self):
-        length = math.sqrt(self.x**2 + self.y**2 + self.z**2)
-        return Vector3(self.x / length, self.y / length, self.z / length)
-
-class Ray:
-    def __init__(self, origin, direction):
-        self.origin = origin
-        self.direction = direction.normalize()
-
 class Material:
-    def __init__(self, color, specular=0, reflection=0, refraction=0, refractive_index=1, roughness=0):
+    def __init__(self, color, specular=0, reflection=0, refraction=0, refractive_index=1):
         self.color = color
         self.specular = specular
         self.reflection = reflection
         self.refraction = refraction
         self.refractive_index = refractive_index
-        self.roughness = roughness  # 0 is smooth, 1 is very rough
 
 class Sphere:
     def __init__(self, center, radius, material):
@@ -109,23 +41,107 @@ class Cylinder:
 class Plane:
     def __init__(self, point, normal, material):
         self.point = point
-        self.normal = normal.normalize()
+        self.normal = normal
         self.material = material
 
-class Light:
-    def __init__(self, position, color, intensity):
-        self.position = position
-        self.color = color
-        self.intensity = intensity
-
-class AreaLight:
-    def __init__(self, position, u, v, color, intensity, samples=4):
-        self.position = position
+class Rectangle:
+    def __init__(self, corner, u, v, material):
+        self.corner = corner
         self.u = u
         self.v = v
-        self.color = color
-        self.intensity = intensity
-        self.samples = samples
+        self.material = material
+
+class Cube:
+    def __init__(self, min_point, max_point, material):
+        self.min_point = min_point
+        self.max_point = max_point
+        self.material = material
+
+def initialize_data(scene):
+    data = {}
+
+    data['spheres'] = np.array([
+        [s.center.x, s.center.y, s.center.z, s.radius,
+         s.material.color.x, s.material.color.y, s.material.color.z,
+         s.material.specular, s.material.reflection, s.material.refraction, s.material.refractive_index]
+        for s in scene['spheres']
+    ], dtype=np.float32)
+
+    data['cylinders'] = np.array([
+        [c.center.x, c.center.y, c.center.z, c.radius, c.height,
+         c.material.color.x, c.material.color.y, c.material.color.z,
+         c.material.specular, c.material.reflection, c.material.refraction, c.material.refractive_index]
+        for c in scene['cylinders']
+    ], dtype=np.float32)
+
+    data['planes'] = np.array([
+        [p.point.x, p.point.y, p.point.z,
+         p.normal.x, p.normal.y, p.normal.z,
+         p.material.color.x, p.material.color.y, p.material.color.z,
+         p.material.specular, p.material.reflection]
+        for p in scene['planes']
+    ], dtype=np.float32)
+
+    data['rectangles'] = np.array([
+        [r.corner.x, r.corner.y, r.corner.z,
+         r.u.x, r.u.y, r.u.z,
+         r.v.x, r.v.y, r.v.z,
+         r.material.color.x, r.material.color.y, r.material.color.z,
+         r.material.specular, r.material.reflection]
+        for r in scene['rectangles']
+    ], dtype=np.float32)
+
+    data['cubes'] = np.array([
+        [c.min_point.x, c.min_point.y, c.min_point.z,
+         c.max_point.x, c.max_point.y, c.max_point.z,
+         c.material.color.x, c.material.color.y, c.material.color.z,
+         c.material.specular, c.material.reflection, c.material.refraction, c.material.refractive_index]
+        for c in scene['cubes']
+    ], dtype=np.float32)
+
+    if use_gpu:
+        for key in data:
+            data[key] = cp.array(data[key])
+
+    return data
+
+def render_cpu(width, height, samples, data):
+    # Implement CPU rendering here
+    # This is a placeholder and should be replaced with actual CPU ray tracing code
+    output = np.zeros((height, width, 3), dtype=np.float32)
+    # ... (implement CPU ray tracing)
+    return output
+
+def render_gpu(width, height, samples, data):
+    output = cp.zeros((height, width, 3), dtype=cp.float32)
+
+    threadsperblock = (16, 16)
+    blockspergrid_x = (width + threadsperblock[0] - 1) // threadsperblock[0]
+    blockspergrid_y = (height + threadsperblock[1] - 1) // threadsperblock[1]
+    blockspergrid = (blockspergrid_x, blockspergrid_y)
+
+    ray_trace_kernel(
+        grid=blockspergrid,
+        block=threadsperblock,
+        args=(output, width, height, samples,
+              data['spheres'], data['spheres'].shape[0],
+              data['cylinders'], data['cylinders'].shape[0],
+              data['planes'], data['planes'].shape[0],
+              data['rectangles'], data['rectangles'].shape[0],
+              data['cubes'], data['cubes'].shape[0])
+    )
+
+    cp.cuda.stream.get_current_stream().synchronize()
+    if cp.cuda.runtime.getLastError() != 0:
+        print("CUDA error: {}".format(cp.cuda.runtime.getLastError()))
+
+    return output
+
+def render(width, height, samples, data):
+    if use_gpu:
+        return render_gpu(width, height, samples, data)
+    else:
+        return render_cpu(width, height, samples, data)
 
 # Scene setup
 scene = {
@@ -141,306 +157,36 @@ scene = {
     'planes': [
         Plane(Vector3(0, -1, 0), Vector3(0, 1, 0), Material(Vector3(0.5, 0.5, 0.5), specular=0.1, reflection=0.1)),
         Plane(Vector3(0, 0, -10), Vector3(0, 0, 1), Material(Vector3(0.7, 0.7, 0.7), specular=0.1, reflection=0.1))
+    ],
+    'rectangles': [
+        Rectangle(Vector3(-2, 2, -6), Vector3(2, 0, 0), Vector3(0, 2, 0), Material(Vector3(1, 0.5, 0), specular=0.3, reflection=0.2)),
+        Rectangle(Vector3(2, -1, -4), Vector3(0, 2, 0), Vector3(2, 0, 0), Material(Vector3(0.5, 0, 1), specular=0.3, reflection=0.2))
+    ],
+    'cubes': [
+        Cube(Vector3(-1, -1, -3), Vector3(0, 0, -2), Material(Vector3(0.5, 0.5, 1), specular=0.4, reflection=0.1)),
+        Cube(Vector3(1, 1, -5), Vector3(2, 2, -4), Material(Vector3(1, 0.5, 0.5), specular=0.4, reflection=0.1))
     ]
 }
-
-def initialize_gpu_data(scene):
-    gpu_data = {}
-
-    gpu_data['spheres'] = cp.array([
-        [s.center.x, s.center.y, s.center.z, s.radius,
-         s.material.color.x, s.material.color.y, s.material.color.z,
-         s.material.specular, s.material.reflection, s.material.refraction, s.material.refractive_index]
-        for s in scene['spheres']
-    ], dtype=cp.float32)
-
-    gpu_data['cylinders'] = cp.array([
-        [c.center.x, c.center.y, c.center.z, c.radius, c.height,
-         c.material.color.x, c.material.color.y, c.material.color.z,
-         c.material.specular, c.material.reflection, c.material.refraction, c.material.refractive_index]
-        for c in scene['cylinders']
-    ], dtype=cp.float32)
-
-    gpu_data['planes'] = cp.array([
-        [p.point.x, p.point.y, p.point.z,
-         p.normal.x, p.normal.y, p.normal.z,
-         p.material.color.x, p.material.color.y, p.material.color.z,
-         p.material.specular, p.material.reflection]
-        for p in scene['planes']
-    ], dtype=cp.float32)
-
-    return gpu_data
-
-
-def random_in_unit_sphere():
-    while True:
-        p = Vector3(random.uniform(-1, 1), random.uniform(-1, 1), random.uniform(-1, 1))
-        if p.dot(p) < 1:
-            return p
-
-def perturb_vector(vector, roughness):
-    random_vec = random_in_unit_sphere()
-    return (vector + random_vec * roughness).normalize()
-
-
-def checkered_pattern(point, scale=0.5):
-    x = math.floor(point.x * scale)
-    z = math.floor(point.z * scale)
-    return (x + z) % 2 == 0
-
-def intersect_sphere(ray, sphere):
-    oc = ray.origin - sphere.center
-    a = ray.direction.dot(ray.direction)
-    b = 2 * oc.dot(ray.direction)
-    c = oc.dot(oc) - sphere.radius**2
-    discriminant = b**2 - 4*a*c
-    if discriminant < 0:
-        return None
-    t = (-b - math.sqrt(discriminant)) / (2*a)
-    if t < 0:
-        return None
-    return t
-
-def intersect_cylinder(ray, cylinder):
-    oc = ray.origin - cylinder.center
-    a = ray.direction.x**2 + ray.direction.z**2
-    b = 2 * (oc.x * ray.direction.x + oc.z * ray.direction.z)
-    c = oc.x**2 + oc.z**2 - cylinder.radius**2
-    discriminant = b**2 - 4*a*c
-    if discriminant < 0:
-        return None
-    t = (-b - math.sqrt(discriminant)) / (2*a)
-    if t < 0:
-        return None
-    y = ray.origin.y + t * ray.direction.y
-    if y < cylinder.center.y or y > cylinder.center.y + cylinder.height:
-        return None
-    return t
-
-def intersect_plane(ray, plane):
-    denom = ray.direction.dot(plane.normal)
-    if abs(denom) > 1e-6:
-        t = (plane.point - ray.origin).dot(plane.normal) / denom
-        if t > 0:
-            return t
-    return None
-
-def find_nearest_intersection(ray, scene):
-    nearest_intersection = None
-    min_distance = float('inf')
-
-    for obj in scene['spheres'] + scene['cylinders'] + scene['planes']:
-        if isinstance(obj, Sphere):
-            t = intersect_sphere(ray, obj)
-        elif isinstance(obj, Cylinder):
-            t = intersect_cylinder(ray, obj)
-        else:  # Plane
-            t = intersect_plane(ray, obj)
-
-        if t and t < min_distance:
-            min_distance = t
-            if isinstance(obj, Sphere):
-                point = ray.origin + ray.direction * t
-                normal = (point - obj.center).normalize()
-            elif isinstance(obj, Cylinder):
-                point = ray.origin + ray.direction * t
-                normal = Vector3(point.x - obj.center.x, 0, point.z - obj.center.z).normalize()
-            else:  # Plane
-                point = ray.origin + ray.direction * t
-                normal = obj.normal
-            nearest_intersection = (obj, point, normal)
-
-    return nearest_intersection
-
-def compute_lighting(point, normal, view_dir, material, scene):
-    color = Vector3(0.1, 0.1, 0.1)  # Ambient light
-    for light in [scene['global_light']] + scene['lights']:
-        light_dir = (light.position - point).normalize()
-        shadow_ray = Ray(point + normal * 0.001, light_dir)
-        shadow_intersection = find_nearest_intersection(shadow_ray, scene)
-
-        if not shadow_intersection or (shadow_intersection[0].material.refraction > 0):
-            diffuse = max(0, normal.dot(light_dir))
-            color = color + material.color * light.color * light.intensity * diffuse * 0.5
-
-            if material.specular > 0:
-                reflect_dir = perturb_vector(light_dir - normal * (2 * light_dir.dot(normal)), material.roughness)
-                specular = max(0, view_dir.dot(reflect_dir)) ** (50 * (1 - material.roughness))
-                color = color + light.color * light.intensity * material.specular * specular * 0.3
-
-    return color
-
-def trace_ray(ray, scene, depth=0):
-    if depth > 3:
-        return Vector3(0, 0, 0)
-
-    intersection = find_nearest_intersection(ray, scene)
-    if not intersection:
-        return Vector3(0.05, 0.05, 0.1)  # Slightly blue background
-
-    obj, hit_point, normal = intersection
-    material = obj.material
-
-    if isinstance(obj, Plane):
-        if checkered_pattern(hit_point):
-            base_color = Vector3(0.2, 0.2, 0.2)  # Darker gray
-        else:
-            base_color = Vector3(0.8, 0.8, 0.8)  # Lighter gray
-        color = base_color * material.color
-    else:
-        color = material.color
-
-    # Compute lighting
-    light_color = compute_lighting(hit_point, normal, ray.direction * -1, material, scene)
-    color = color * light_color
-
-    # Compute reflection
-    if material.reflection > 0 and depth < 3:
-        reflect_dir = perturb_vector(ray.direction - normal * (2 * ray.direction.dot(normal)), material.roughness)
-        reflect_ray = Ray(hit_point + normal * 0.001, reflect_dir)
-        reflect_color = trace_ray(reflect_ray, scene, depth + 1)
-        color = color * (1 - material.reflection) + reflect_color * material.reflection
-
-    # Compute refraction (unchanged)
-    if material.refraction > 0:
-        refract_color = compute_refraction(ray, hit_point, normal, material, scene, depth)
-        color = color * (1 - material.refraction) + refract_color * material.refraction
-
-    return color
-
-def compute_refraction(ray, hit_point, normal, material, scene, depth):
-    n1 = 1.0  # Air refractive index
-    n2 = material.refractive_index
-
-    cos_i = -normal.dot(ray.direction)
-    if cos_i < 0:
-        cos_i = -cos_i
-        normal = normal * -1
-        n1, n2 = n2, n1
-
-    n = n1 / n2
-    k = 1 - n * n * (1 - cos_i * cos_i)
-    if k < 0:
-        return Vector3(0, 0, 0)  # Total internal reflection
-
-    refract_dir = (ray.direction * n + normal * (n * cos_i - math.sqrt(k))).normalize()
-    refract_ray = Ray(hit_point - normal * 0.001, refract_dir)
-    return trace_ray(refract_ray, scene, depth + 1)
-
-def render_pixel(x, y, width, height, scene, samples=1):
-    aspect_ratio = width / height
-    color = Vector3(0, 0, 0)
-    for _ in range(samples):
-        u = ((x + random.random()) / width) * 2 - 1
-        v = -((y + random.random()) / height * 2 - 1) / aspect_ratio
-        ray = Ray(Vector3(0, 0, 0), Vector3(u, v, -1).normalize())
-        color = color + trace_ray(ray, scene)
-    return color * (1 / samples)
-
-def render_chunk(args):
-    x_start, x_end, y_start, y_end, width, height, scene, samples = args
-    chunk = np.zeros((y_end - y_start, x_end - x_start, 3))
-    for y in range(y_start, y_end):
-        for x in range(x_start, x_end):
-            color = render_pixel(x, y, width, height, scene, samples)
-            chunk[y - y_start, x - x_start] = [min(1, max(0, c)) for c in (color.x, color.y, color.z)]
-    return chunk
-
-def render(width, height, samples, gpu_data):
-    output = cp.zeros((height, width, 3), dtype=cp.float32)
-
-    threadsperblock = (16, 16)
-    blockspergrid_x = (width + threadsperblock[0] - 1) // threadsperblock[0]
-    blockspergrid_y = (height + threadsperblock[1] - 1) // threadsperblock[1]
-    blockspergrid = (blockspergrid_x, blockspergrid_y)
-
-    ray_trace_kernel(
-        grid=blockspergrid,
-        block=threadsperblock,
-        args=(output, width, height, samples,
-              gpu_data['spheres'], gpu_data['spheres'].shape[0],
-              gpu_data['cylinders'], gpu_data['cylinders'].shape[0],
-              gpu_data['planes'], gpu_data['planes'].shape[0])
-    )
-
-    cp.cuda.stream.get_current_stream().synchronize()
-    if cp.cuda.runtime.getLastError() != 0:
-        print("CUDA error: {}".format(cp.cuda.runtime.getLastError()))
-
-    return output
-
-window = None
-
-def display():
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-    glLoadIdentity()
-
-    glEnable(GL_TEXTURE_2D)
-    glBegin(GL_QUADS)
-    glTexCoord2f(0, 1); glVertex2f(-1, -1)
-    glTexCoord2f(1, 1); glVertex2f(1, -1)
-    glTexCoord2f(1, 0); glVertex2f(1, 1)
-    glTexCoord2f(0, 0); glVertex2f(-1, 1)
-    glEnd()
-    glDisable(GL_TEXTURE_2D)
-
-    glutSwapBuffers()
-
-def reshape(w, h):
-    glViewport(0, 0, w, h)
-    glMatrixMode(GL_PROJECTION)
-    glLoadIdentity()
-    gluOrtho2D(-1, 1, -1, 1)
-    glMatrixMode(GL_MODELVIEW)
-
-def keyboard(key, x, y):
-    if key == b'\x1b':  # ESC key
-        glutDestroyWindow(window)
-        sys.exit()
-
-# In the main function, modify the image export:
-def export_image(image, filename="render.png"):
-    if using_gpu:
-        image = cp.asnumpy(image)
-    Image.fromarray(image).save(filename)
-    logging.info(f"Image exported as {filename}")
 
 def main():
     width, height = 800, 600
     samples = 4
 
-    logging.info("Initializing GPU data...")
-    gpu_data = initialize_gpu_data(scene)
+    data = initialize_data(scene)
 
-    logging.info(f"Rendering at {width}x{height} with {samples} samples per pixel...")
+    print(f"Rendering at {width}x{height} with {samples} samples per pixel...")
     start_time = time.time()
 
-    image = render(width, height, samples, gpu_data)
-
-    print("Image shape:", image.shape)
-    print("Image min:", cp.min(image))
-    print("Image max:", cp.max(image))
-
-    image_cpu = cp.asnumpy(image)
+    image = render(width, height, samples, data)
 
     end_time = time.time()
-    logging.info(f"Rendering complete. Time taken: {end_time - start_time:.2f} seconds")
+    print(f"Rendering complete. Time taken: {end_time - start_time:.2f} seconds")
 
-    # Move the image to CPU for post-processing and display
-    image_cpu = cp.asnumpy(image)
+    if use_gpu:
+        image = cp.asnumpy(image)
 
-    # Apply gamma correction and tone mapping
-    image_cpu = np.power(image_cpu, 1/2.2)  # Gamma correction
-    image_cpu = np.clip(image_cpu * 1.2, 0, 1)  # Slightly increase brightness and clip
-    image_cpu = (image_cpu * 255).astype(np.uint8)
-
-    # Save the image
-    plt.imsave("render.png", image_cpu)
-    logging.info("Image saved as render.png")
-
-    # Display the image
     plt.figure(figsize=(10, 7.5))
-    plt.imshow(image_cpu)
+    plt.imshow(image)
     plt.axis('off')
     plt.title("Ray Traced Scene")
     plt.show()
