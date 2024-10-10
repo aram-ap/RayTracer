@@ -13,6 +13,10 @@ struct Material {
     float refractive_index;
 };
 
+__device__ float3 vector_cross(float3 a, float3 b) {
+    return make_float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+}
+
 __device__ float3 vector_add(float3 a, float3 b) {
     return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
 }
@@ -172,6 +176,7 @@ __device__ bool is_in_shadow(float3 hit_point, float3 light_dir, float* spheres,
 
 
 __device__ float3 trace_ray(Ray ray, float* spheres, int num_spheres, float* cylinders, int num_cylinders, float* planes, int num_planes, float* rectangles, int num_rectangles, int depth) {
+
     if (depth > 5) return make_float3(0, 0, 0);
 
     float closest_t = 1e30f;
@@ -305,7 +310,7 @@ __device__ float3 trace_ray(Ray ray, float* spheres, int num_spheres, float* cyl
     if (material.reflection > 0 && depth < 5) {
         float3 reflect_dir = vector_subtract(ray.direction, vector_multiply(normal, 2 * vector_dot(ray.direction, normal)));
         Ray reflect_ray = {hit_point, reflect_dir};
-        float3 reflection = trace_ray(reflect_ray, spheres, num_spheres, planes, num_planes, depth + 1);
+        float3 reflection = trace_ray(reflect_ray, spheres, num_spheres, cylinders, num_cylinders, planes, num_planes, rectangles, num_rectangles, depth + 1);
         color = vector_add(vector_multiply(color, 1 - material.reflection), vector_multiply(reflection, material.reflection));
     }
 
@@ -317,7 +322,9 @@ void ray_trace_kernel(float* output, int width, int height, int samples,
                       float* spheres, int num_spheres,
                       float* cylinders, int num_cylinders,
                       float* planes, int num_planes,
-                      float* rectangles, int num_rectangles) {    int x = blockIdx.x * blockDim.x + threadIdx.x;
+                      float* rectangles, int num_rectangles) {
+
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     if (x >= width || y >= height) return;
 
