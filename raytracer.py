@@ -13,155 +13,29 @@ import logging
 # At the beginning of your script, replace the CuPy import with:
 try:
     import cupy as cp
+    import os
 
-    ray_trace_kernel = cp.RawKernel(r'''
-                                    #include <curand_kernel.h>
-                                    #include <math_constants.h>
+    # Get the directory of the current script
+    current_dir = os.path.dirname(os.path.abspath(__file__))
 
-                                    struct Ray {
-                                        float3 origin;
-                                        float3 direction;
-                                        };
+    # Construct the path to the CUDA kernel file
+    kernel_path = os.path.join(current_dir, 'ray_tracer_kernel.cu')
 
-                                    struct Sphere {
-                                        float3 center;
-                                        float radius;
-                                        float3 color;
-                                        float specular;
-                                        float reflection;
-                                        };
+    # Read the CUDA kernel code from the file
+    with open(kernel_path, 'r') as f:
+        cuda_code = f.read()
 
-                                    __device__ float3 vector_add(float3 a, float3 b) {
-                                        return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
-                                        }
-
-                                    __device__ float3 vector_subtract(float3 a, float3 b) {
-                                        return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
-                                        }
-
-                                    __device__ float3 vector_multiply(float3 a, float b) {
-                                        return make_float3(a.x * b, a.y * b, a.z * b);
-                                        }
-
-                                    __device__ float vector_dot(float3 a, float3 b) {
-                                        return a.x * b.x + a.y * b.y + a.z * b.z;
-                                        }
-
-                                    __device__ float3 vector_normalize(float3 v) {
-                                        float length = sqrtf(v.x * v.x + v.y * v.y + v.z * v.z);
-                                        return make_float3(v.x / length, v.y / length, v.z / length);
-                                        }
-
-                                    __device__ bool intersect_sphere(Ray ray, Sphere sphere, float* t) {
-                                        float3 oc = vector_subtract(ray.origin, sphere.center);
-                                        float a = vector_dot(ray.direction, ray.direction);
-                                        float b = 2.0f * vector_dot(oc, ray.direction);
-                                        float c = vector_dot(oc, oc) - sphere.radius * sphere.radius;
-                                        float discriminant = b * b - 4 * a * c;
-
-                                        if (discriminant > 0) {
-                                            float temp = (-b - sqrtf(discriminant)) / (2.0f * a);
-                                            if (temp > 0.001f) {
-                                                *t = temp;
-                                                return true;
-                                                }
-                                            temp = (-b + sqrtf(discriminant)) / (2.0f * a);
-                                            if (temp > 0.001f) {
-                                                *t = temp;
-                                                return true;
-                                                }
-                                            }
-                                        return false;
-                                        }
-
-__device__ float3 trace_ray(Ray ray, Sphere* spheres, int num_spheres, float3 light_pos) {
-        float closest_t = CUDART_INF_F;
-        Sphere* closest_sphere = NULL;
-
-        for (int i = 0; i < num_spheres; i++) {
-            float t;
-            if (intersect_sphere(ray, spheres[i], &t) && t < closest_t) {
-                closest_t = t;
-                closest_sphere = &spheres[i];
-                }
-            }
-
-        if (closest_sphere == NULL) {
-            return make_float3(0.05f, 0.05f, 0.1f);  // Background color
-            }
-
-        float3 hit_point = vector_add(ray.origin, vector_multiply(ray.direction, closest_t));
-        float3 normal = vector_normalize(vector_subtract(hit_point, closest_sphere->center));
-
-        // Diffuse lighting
-        float3 light_dir = vector_normalize(vector_subtract(light_pos, hit_point));
-        float diffuse = fmaxf(vector_dot(normal, light_dir), 0.0f);
-
-        // Specular lighting
-        float3 view_dir = vector_normalize(vector_multiply(ray.direction, -1.0f));
-        float3 reflect_dir = vector_normalize(vector_subtract(vector_multiply(normal, 2.0f * vector_dot(normal, light_dir)), light_dir));
-        float specular = powf(fmaxf(vector_dot(view_dir, reflect_dir), 0.0f), 50.0f) * closest_sphere->specular;
-
-        float3 color = vector_multiply(closest_sphere->color, diffuse + 0.1f);  // 0.1 for ambient light
-        color = vector_add(color, make_float3(specular, specular, specular));
-
-        return color;
-        }
-
-extern "C" __global__
-void ray_trace_kernel(float* output, int width, int height, int samples,
-                      float* spheres_data, int num_spheres) {
-                              int x = blockIdx.x * blockDim.x + threadIdx.x;
-                              int y = blockIdx.y * blockDim.y + threadIdx.y;
-                              if (x >= width || y >= height) return;
-
-                              curandState state;
-                              curand_init(y * width + x, 0, 0, &state);
-
-                              Sphere spheres[10];  // Assuming a maximum of 10 spheres
-                              for (int i = 0; i < num_spheres; i++) {
-                                  spheres[i].center = make_float3(spheres_data[i*10], spheres_data[i*10+1], spheres_data[i*10+2]);
-                                  spheres[i].radius = spheres_data[i*10+3];
-                                  spheres[i].color = make_float3(spheres_data[i*10+4], spheres_data[i*10+5], spheres_data[i*10+6]);
-                                  spheres[i].specular = spheres_data[i*10+7];
-                                  spheres[i].reflection = spheres_data[i*10+8];
-                                  }
-
-                              float3 camera_pos = make_float3(0.0f, 0.0f, 0.0f);
-                              float3 light_pos = make_float3(5.0f, 5.0f, 5.0f);
-
-                              float3 color = make_float3(0.0f, 0.0f, 0.0f);
-                              for (int s = 0; s < samples; s++) {
-                                  float u = (float(x) + curand_uniform(&state)) / float(width);
-                                  float v = (float(y) + curand_uniform(&state)) / float(height);
-
-                                  float3 direction = vector_normalize(make_float3(
-                                      (2.0f * u - 1.0f) * float(width) / float(height),
-                                      -(2.0f * v - 1.0f),
-                                      -1.0f
-                                      ));
-
-                                  Ray ray = {camera_pos, direction};
-                                  color = vector_add(color, trace_ray(ray, spheres, num_spheres, light_pos));
-                                  }
-                              color = vector_multiply(color, 1.0f / float(samples));
-
-                              int idx = (y * width + x) * 3;
-                              output[idx] = color.x;
-                              output[idx + 1] = color.y;
-                              output[idx + 2] = color.z;
-                              }
-''', 'ray_trace_kernel')
-
+    # Create the RawKernel using the code from the file
+    ray_trace_kernel = cp.RawKernel(cuda_code, 'ray_trace_kernel')
     xp = cp
     using_gpu = True
     logging.info("Using GPU acceleration")
+
 except (NameError, ImportError, ModuleNotFoundError) as e:
     xp = np
     using_gpu = False
     logging.info("GPU acceleration not available, using CPU")
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Use GPU if available, otherwise use CPU
 try:
@@ -255,17 +129,12 @@ class AreaLight:
 
 # Scene setup
 scene = {
-    'global_light': Light(Vector3(0, 10, 0), Vector3(1, 1, 1), 0.5),
-    'lights': [
-        Light(Vector3(-5, 5, -5), Vector3(1, 0.8, 0.8), 0.5),
-        Light(Vector3(5, 5, -5), Vector3(0.8, 1, 0.8), 0.5),
-        Light(Vector3(0, 5, -10), Vector3(0.8, 0.8, 1), 0.5),
-        Light(Vector3(0, 5, 0), Vector3(1, 1, 1), 0.5),
-    ],
+    'global_light': Light(Vector3(0, 10, 10), Vector3(1, 1, 1), 0.5),
+    'lights': [Light(Vector3(5, 5, 5), Vector3(1, 1, 1), 1.0)],
     'spheres': [
-        Sphere(Vector3(0, 1, -5), 1, Material(Vector3(1, 0, 0), specular=0.3, reflection=0.1, roughness=0.2)),  # Slightly rough red sphere
-        Sphere(Vector3(-2.5, 1, -7), 1.5, Material(Vector3(0, 1, 0), specular=0.3, reflection=0.4, roughness=0.1)),  # Smoother green sphere
-        Sphere(Vector3(2.5, 1, -6), 0.75, Material(Vector3(0, 0, 1), specular=0.3, reflection=0.1, roughness=0.5))  # Rougher blue sphere
+        Sphere(Vector3(0, 0, -5), 1, Material(Vector3(1, 0, 0), specular=0.6, reflection=0.2)),  # Red sphere
+        Sphere(Vector3(-2, 0, -7), 1.5, Material(Vector3(0, 1, 0), specular=0.4, reflection=0.8)),  # Green sphere (highly reflective)
+        Sphere(Vector3(2, 0, -6), 0.75, Material(Vector3(0, 0, 1), specular=0.5, reflection=0.3))  # Blue sphere
     ],
     'cylinders': [
         Cylinder(Vector3(-1, 0.5, -4), 0.5, 1, Material(Vector3(1, 1, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5, roughness=0.05)),
@@ -286,7 +155,7 @@ def initialize_gpu_data(scene):
     gpu_data['spheres'] = cp.array([
         [s.center.x, s.center.y, s.center.z, s.radius,
          s.material.color.x, s.material.color.y, s.material.color.z,
-         s.material.specular, s.material.reflection, s.material.roughness]
+         s.material.specular, s.material.reflection, 0.0]  # Last value is a placeholder
         for s in scene['spheres']
     ], dtype=cp.float32)
 
