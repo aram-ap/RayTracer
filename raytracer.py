@@ -16,22 +16,29 @@ try:
 
     ray_trace_kernel = cp.RawKernel(r'''
                                     extern "C" __global__
-                                    void ray_trace_kernel(float* output, int width, int height, int samples) {
-                                        int x = blockIdx.x * blockDim.x + threadIdx.x;
-                                        int y = blockIdx.y * blockDim.y + threadIdx.y;
-                                        if (x >= width || y >= height) return;
+                                    void ray_trace_kernel(float* output, int width, int height, int samples,
+                                                          float* spheres, int num_spheres,
+                                                          float* cylinders, int num_cylinders,
+                                                          float* planes, int num_planes,
+                                                          float* lights, int num_lights) {
+                                                              int x = blockIdx.x * blockDim.x + threadIdx.x;
+                                                              int y = blockIdx.y * blockDim.y + threadIdx.y;
+                                                              if (x >= width || y >= height) return;
 
-                                        // Implement ray tracing logic here
-                                        // This is a placeholder; you'll need to port your ray tracing code to CUDA
-                                        float r = float(x) / float(width);
-                                        float g = float(y) / float(height);
-                                        float b = 0.2;
+                                                              // Implement ray tracing logic here using the GPU data
+                                                              // This is where you'll need to port your existing ray tracing code to CUDA
+                                                              // using the spheres, cylinders, planes, and lights data
 
-                                        int idx = (y * width + x) * 3;
-                                        output[idx] = r;
-                                        output[idx + 1] = g;
-                                        output[idx + 2] = b;
-                                        }
+                                                              // Placeholder output
+                                                              float r = float(x) / float(width);
+                                                              float g = float(y) / float(height);
+                                                              float b = 0.2;
+
+                                                              int idx = (y * width + x) * 3;
+                                                              output[idx] = r;
+                                                              output[idx + 1] = g;
+                                                              output[idx + 2] = b;
+                                                              }
                                     ''', 'ray_trace_kernel')
 
 
@@ -160,6 +167,45 @@ scene = {
         Plane(Vector3(8, 0, 0), Vector3(-1, 0, 0), Material(Vector3(0.9, 0.9, 0.9), roughness=0.3))   # Right wall
     ]
 }
+
+def initialize_gpu_data(scene):
+    gpu_data = {}
+
+    # Convert spheres data to CuPy array
+    gpu_data['spheres'] = cp.array([
+        [s.center.x, s.center.y, s.center.z, s.radius,
+         s.material.color.x, s.material.color.y, s.material.color.z,
+         s.material.specular, s.material.reflection, s.material.roughness]
+        for s in scene['spheres']
+    ])
+
+    # Convert cylinders data to CuPy array
+    gpu_data['cylinders'] = cp.array([
+        [c.center.x, c.center.y, c.center.z, c.radius, c.height,
+         c.material.color.x, c.material.color.y, c.material.color.z,
+         c.material.specular, c.material.reflection, c.material.refraction,
+         c.material.refractive_index, c.material.roughness]
+        for c in scene['cylinders']
+    ])
+
+    # Convert planes data to CuPy array
+    gpu_data['planes'] = cp.array([
+        [p.point.x, p.point.y, p.point.z,
+         p.normal.x, p.normal.y, p.normal.z,
+         p.material.color.x, p.material.color.y, p.material.color.z,
+         p.material.roughness]
+        for p in scene['planes']
+    ])
+
+    # Convert lights data to CuPy array
+    gpu_data['lights'] = cp.array([
+        [l.position.x, l.position.y, l.position.z,
+         l.color.x, l.color.y, l.color.z, l.intensity]
+        for l in [scene['global_light']] + scene['lights']
+    ])
+
+    return gpu_data
+
 
 def random_in_unit_sphere():
     while True:
@@ -335,7 +381,7 @@ def render_chunk(args):
             chunk[y - y_start, x - x_start] = [min(1, max(0, c)) for c in (color.x, color.y, color.z)]
     return chunk
 
-def render(width, height, samples=4):
+def render(width, height, samples, gpu_data):
     output = cp.zeros((height, width, 3), dtype=cp.float32)
 
     # Determine grid and block sizes
@@ -348,7 +394,11 @@ def render(width, height, samples=4):
     ray_trace_kernel(
         grid=blockspergrid,
         block=threadsperblock,
-        args=(output, width, height, samples)
+        args=(output, width, height, samples,
+              gpu_data['spheres'], gpu_data['spheres'].shape[0],
+              gpu_data['cylinders'], gpu_data['cylinders'].shape[0],
+              gpu_data['planes'], gpu_data['planes'].shape[0],
+              gpu_data['lights'], gpu_data['lights'].shape[0])
     )
 
     return output
@@ -393,10 +443,13 @@ def main():
     width, height = 800, 600
     samples = 4
 
+    logging.info("Initializing GPU data...")
+    gpu_data = initialize_gpu_data(scene)
+
     logging.info(f"Rendering at {width}x{height} with {samples} samples per pixel...")
     start_time = time.time()
 
-    image = render(width, height, samples)
+    image = render(width, height, samples, gpu_data)
 
     end_time = time.time()
     logging.info(f"Rendering complete. Time taken: {end_time - start_time:.2f} seconds")
