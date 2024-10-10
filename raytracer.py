@@ -129,22 +129,18 @@ class AreaLight:
 
 # Scene setup
 scene = {
-    'global_light': Light(Vector3(0, 10, 10), Vector3(1, 1, 1), 0.5),
-    'lights': [Light(Vector3(5, 5, 5), Vector3(1, 1, 1), 1.0)],
     'spheres': [
-        Sphere(Vector3(0, 0, -5), 1, Material(Vector3(1, 0, 0), specular=0.6, reflection=0.2)),  # Red sphere
-        Sphere(Vector3(-2, 0, -7), 1.5, Material(Vector3(0, 1, 0), specular=0.4, reflection=0.8)),  # Green sphere (highly reflective)
-        Sphere(Vector3(2, 0, -6), 0.75, Material(Vector3(0, 0, 1), specular=0.5, reflection=0.3))  # Blue sphere
+        Sphere(Vector3(0, 1, -5), 1, Material(Vector3(1, 0, 0), specular=0.6, reflection=0.2)),
+        Sphere(Vector3(-2.5, 0.5, -7), 1.5, Material(Vector3(0, 1, 0), specular=0.4, reflection=0.8)),
+        Sphere(Vector3(2.5, 0.5, -6), 0.75, Material(Vector3(0, 0, 1), specular=0.5, reflection=0.1))
     ],
     'cylinders': [
-        Cylinder(Vector3(-1, 0.5, -4), 0.5, 1, Material(Vector3(1, 1, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5, roughness=0.05)),
-        Cylinder(Vector3(1, 0.5, -3), 0.5, 1, Material(Vector3(1, 1, 1), specular=0.7, reflection=0.1, refraction=0.9, refractive_index=1.5, roughness=0.05))
+        Cylinder(Vector3(-1, 0, -4), 0.5, 1, Material(Vector3(1, 1, 0), specular=0.7, reflection=0.1)),
+        Cylinder(Vector3(1, 0, -3), 0.5, 1, Material(Vector3(0, 1, 1), specular=0.7, reflection=0.1))
     ],
     'planes': [
-        Plane(Vector3(0, -1, 0), Vector3(0, 1, 0), Material(Vector3(0.9, 0.9, 0.9), roughness=0.3)),  # Slightly rough floor
-        Plane(Vector3(0, 0, -12), Vector3(0, 0, 1), Material(Vector3(0.9, 0.9, 0.9), roughness=0.3)),  # Back wall
-        Plane(Vector3(-8, 0, 0), Vector3(1, 0, 0), Material(Vector3(0.9, 0.9, 0.9), roughness=0.3)),  # Left wall
-        Plane(Vector3(8, 0, 0), Vector3(-1, 0, 0), Material(Vector3(0.9, 0.9, 0.9), roughness=0.3))   # Right wall
+        Plane(Vector3(0, -1, 0), Vector3(0, 1, 0), Material(Vector3(0.5, 0.5, 0.5), specular=0.1, reflection=0.1)),
+        Plane(Vector3(0, 0, -10), Vector3(0, 0, 1), Material(Vector3(0.7, 0.7, 0.7), specular=0.1, reflection=0.1))
     ]
 }
 
@@ -154,34 +150,24 @@ def initialize_gpu_data(scene):
     gpu_data['spheres'] = cp.array([
         [s.center.x, s.center.y, s.center.z, s.radius,
          s.material.color.x, s.material.color.y, s.material.color.z,
-         s.material.specular, s.material.reflection, 0.0]  # Last value is a placeholder
+         s.material.specular, s.material.reflection, s.material.refraction, s.material.refractive_index]
         for s in scene['spheres']
     ], dtype=cp.float32)
 
-    # Convert cylinders data to CuPy array
     gpu_data['cylinders'] = cp.array([
         [c.center.x, c.center.y, c.center.z, c.radius, c.height,
          c.material.color.x, c.material.color.y, c.material.color.z,
-         c.material.specular, c.material.reflection, c.material.refraction,
-         c.material.refractive_index, c.material.roughness]
+         c.material.specular, c.material.reflection, c.material.refraction, c.material.refractive_index]
         for c in scene['cylinders']
-    ])
+    ], dtype=cp.float32)
 
-    # Convert planes data to CuPy array
     gpu_data['planes'] = cp.array([
         [p.point.x, p.point.y, p.point.z,
          p.normal.x, p.normal.y, p.normal.z,
          p.material.color.x, p.material.color.y, p.material.color.z,
-         p.material.roughness]
+         p.material.specular, p.material.reflection]
         for p in scene['planes']
-    ])
-
-    # Convert lights data to CuPy array
-    gpu_data['lights'] = cp.array([
-        [l.position.x, l.position.y, l.position.z,
-         l.color.x, l.color.y, l.color.z, l.intensity]
-        for l in [scene['global_light']] + scene['lights']
-    ])
+    ], dtype=cp.float32)
 
     return gpu_data
 
@@ -372,11 +358,12 @@ def render(width, height, samples, gpu_data):
         grid=blockspergrid,
         block=threadsperblock,
         args=(output, width, height, samples,
-              gpu_data['spheres'], gpu_data['spheres'].shape[0])
+              gpu_data['spheres'], gpu_data['spheres'].shape[0],
+              gpu_data['cylinders'], gpu_data['cylinders'].shape[0],
+              gpu_data['planes'], gpu_data['planes'].shape[0])
     )
 
-    # Add this error checking
-    cp.cuda.runtime.deviceSynchronize()
+    cp.cuda.stream.get_current_stream().synchronize()
     if cp.cuda.runtime.getLastError() != 0:
         print("CUDA error: {}".format(cp.cuda.runtime.getLastError()))
 
