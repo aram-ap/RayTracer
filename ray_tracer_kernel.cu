@@ -302,6 +302,15 @@ __device__ Vector3 trace_ray(Ray ray, Sphere* spheres, int num_spheres,
     return color;
 }
 
+#define CHECK_CUDA(call) \
+    do { \
+        cudaError_t error = call; \
+        if (error != cudaSuccess) { \
+            printf("CUDA error: %s at line %d\n", cudaGetErrorString(error), __LINE__); \
+            return; \
+        } \
+    } while (0)
+
 extern "C" __global__
 void ray_trace_kernel(float* output, int width, int height, int samples,
                       float* spheres_data, int num_spheres,
@@ -316,7 +325,19 @@ void ray_trace_kernel(float* output, int width, int height, int samples,
     curandState state;
     curand_init(y * width + x, 0, 0, &state);
 
+    // Allocate memory for objects on the stack to avoid dynamic allocation
     Sphere spheres[10];
+    Cylinder cylinders[10];
+    Plane planes[10];
+    Rectangle rectangles[10];
+    Cube cubes[10];
+
+    // Check if we have enough space in our arrays
+    if (num_spheres > 10 || num_cylinders > 10 || num_planes > 10 || num_rectangles > 10 || num_cubes > 10) {
+        printf("Error: Too many objects for static allocation\n");
+        return;
+    }
+
     for (int i = 0; i < num_spheres; i++) {
         spheres[i].center = {spheres_data[i*11], spheres_data[i*11+1], spheres_data[i*11+2]};
         spheres[i].radius = spheres_data[i*11+3];
@@ -327,7 +348,6 @@ void ray_trace_kernel(float* output, int width, int height, int samples,
         spheres[i].material.refractive_index = spheres_data[i*11+10];
     }
 
-    Cylinder cylinders[10];
     for (int i = 0; i < num_cylinders; i++) {
         cylinders[i].center = {cylinders_data[i*12], cylinders_data[i*12+1], cylinders_data[i*12+2]};
         cylinders[i].radius = cylinders_data[i*12+3];
@@ -339,7 +359,6 @@ void ray_trace_kernel(float* output, int width, int height, int samples,
         cylinders[i].material.refractive_index = cylinders_data[i*12+11];
     }
 
-    Plane planes[10];
     for (int i = 0; i < num_planes; i++) {
         planes[i].point = {planes_data[i*11], planes_data[i*11+1], planes_data[i*11+2]};
         planes[i].normal = {planes_data[i*11+3], planes_data[i*11+4], planes_data[i*11+5]};
@@ -348,7 +367,6 @@ void ray_trace_kernel(float* output, int width, int height, int samples,
         planes[i].material.reflection = planes_data[i*11+10];
     }
 
-    Rectangle rectangles[10];
     for (int i = 0; i < num_rectangles; i++) {
         rectangles[i].corner = {rectangles_data[i*14], rectangles_data[i*14+1], rectangles_data[i*14+2]};
         rectangles[i].u = {rectangles_data[i*14+3], rectangles_data[i*14+4], rectangles_data[i*14+5]};
@@ -358,7 +376,6 @@ void ray_trace_kernel(float* output, int width, int height, int samples,
         rectangles[i].material.reflection = rectangles_data[i*14+13];
     }
 
-    Cube cubes[10];
     for (int i = 0; i < num_cubes; i++) {
         cubes[i].min_point = {cubes_data[i*13], cubes_data[i*13+1], cubes_data[i*13+2]};
         cubes[i].max_point = {cubes_data[i*13+3], cubes_data[i*13+4], cubes_data[i*13+5]};
@@ -389,8 +406,12 @@ void ray_trace_kernel(float* output, int width, int height, int samples,
     color = vector_multiply(color, 1.0f / float(samples));
 
     int idx = (y * width + x) * 3;
-    output[idx] = fminf(color.x, 1.0f);
-    output[idx + 1] = fminf(color.y, 1.0f);
-    output[idx + 2] = fminf(color.z, 1.0f);
+    if (idx + 2 < width * height * 3) {
+        output[idx] = fminf(color.x, 1.0f);
+        output[idx + 1] = fminf(color.y, 1.0f);
+        output[idx + 2] = fminf(color.z, 1.0f);
+    } else {
+        printf("Error: Index out of bounds: %d\n", idx);
+    }
 }
 
